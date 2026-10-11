@@ -10,10 +10,14 @@ const SUPPORT_URL = process.env.SUPPORT_URL || "";
 const ADMIN_IDS = new Set((process.env.ADMIN_IDS || "7822690557").split(",").map((id) => id.trim()).filter(Boolean));
 const RETENTION_SECONDS = 90 * 24 * 60 * 60;
 const PLANS = {
-  lite: { title: "Lite", stars: 180, days: 7 },
-  plus: { title: "Plus", stars: 360, days: 30 },
-  prime: { title: "Prime", stars: 1700, days: 365 },
-  ultra: { title: "Ultra", stars: 4370, days: null }
+  lite: { title: "Lite", stars: 180, days: 7, scope: "personal" },
+  plus: { title: "Plus", stars: 360, days: 30, scope: "personal" },
+  prime: { title: "Prime", stars: 1700, days: 365, scope: "personal" },
+  ultra: { title: "Ultra", stars: 4370, days: null, scope: "personal" },
+  group5: { title: "Группы · 5", stars: 499, days: 30, scope: "groups", groups: 5 },
+  group10: { title: "Группы · 10", stars: 749, days: 30, scope: "groups", groups: 10 },
+  group20: { title: "Группы · 20", stars: 1249, days: 30, scope: "groups", groups: 20 },
+  group50: { title: "Группы · 50", stars: 3999, days: 30, scope: "groups", groups: 50 }
 };
 const LOCALE = {
   ru: { connect: "Подключить", support: "Поддержка", language: "Язык", languagePick: "Выберите язык интерфейса:", languageSaved: "Язык: русский", payment: "Оплата получена", activated: "активирован" },
@@ -219,18 +223,23 @@ async function completeStarsPayment(message) {
   const plan = planFromPayload(payment.invoice_payload);
   if (!plan || payment.currency !== "XTR" || payment.total_amount !== plan.stars) return;
   const expiresAt = plan.days ? Date.now() + plan.days * 24 * 60 * 60 * 1000 : null;
-  const record = { plan: plan.id, expiresAt, chargeId: payment.telegram_payment_charge_id, purchasedAt: new Date().toISOString() };
-  await put(`subscription:${message.from.id}`, record, plan.days ? plan.days * 24 * 60 * 60 : null);
+  const record = { plan: plan.id, scope: plan.scope, groups: plan.groups || 0, expiresAt, chargeId: payment.telegram_payment_charge_id, purchasedAt: new Date().toISOString() };
+  const subscriptionKey = plan.scope === "groups" ? `group-subscription:${message.from.id}` : `subscription:${message.from.id}`;
+  await put(subscriptionKey, record, plan.days ? plan.days * 24 * 60 * 60 : null);
   await put(`payment:${payment.telegram_payment_charge_id}`, { ...record, userId: message.from.id, amount: payment.total_amount, currency: payment.currency }, null);
   await addToSet("payments:ids", payment.telegram_payment_charge_id);
   const language = (await get(`language:${message.from.id}`))?.code || "ru";
   const copy = LOCALE[language] || LOCALE.ru;
+  const isGroupPlan = plan.scope === "groups";
   await telegram("sendMessage", {
     chat_id: message.chat.id,
-    text: language === "en"
+    text: isGroupPlan
+      ? `✅ <b>Доступ для ${plan.groups} групп активирован.</b>\n\nОн действует до ${new Date(expiresAt).toLocaleDateString("ru-RU")}. Откройте инструкцию и добавьте Ghost только в группы, которыми вы управляете.`
+      : language === "en"
       ? `✅ <b>${copy.payment}.</b>\n\nYour <b>${plan.title}</b> plan is ${copy.activated}${plan.days ? ` until ${new Date(expiresAt).toLocaleDateString("en-GB")}` : " forever"}.`
       : `✅ <b>${copy.payment}.</b>\n\nТариф <b>${plan.title}</b> ${copy.activated}${plan.days ? ` до ${new Date(expiresAt).toLocaleDateString("ru-RU")}` : " навсегда"}.`,
-    parse_mode: "HTML"
+    parse_mode: "HTML",
+    reply_markup: isGroupPlan ? { inline_keyboard: [[{ text: "Открыть инструкцию для групп", web_app: { url: appLink("groups-guide") || botLink } }]] } : undefined
   });
 }
 
@@ -247,6 +256,7 @@ async function saveBusinessMessage(message) {
     connectionId: message.business_connection_id,
     chatId: message.chat.id,
     messageId: message.message_id,
+    senderId: message.from?.id || null,
     sender: senderName(message),
     username: message.from?.username || null,
     text: messagePreview(message),
@@ -266,9 +276,9 @@ async function processEditedBusinessMessage(message) {
   const key = messageKey(message.business_connection_id, message.chat.id, message.message_id);
   const previous = await get(key);
   await saveBusinessMessage(message);
-  if (!previous) return;
   const connection = await get(`connection:${message.business_connection_id}`);
   if (!connection?.enabled) return;
+  if (!previous || String(message.from?.id) === String(connection.ownerId) || String(previous.senderId) === String(connection.ownerId)) return;
   const oldText = escapeHtml(previous.text);
   const newText = escapeHtml(messagePreview(message));
   await notifyOwner(connection.userChatId,
@@ -295,6 +305,7 @@ async function processDeletedBusinessMessages(deleted) {
   for (const id of deleted.message_ids || []) {
     const key = messageKey(deleted.business_connection_id, chatId, id);
     const previous = await get(key);
+    if (previous && String(previous.senderId) === String(connection.ownerId)) continue;
     if (!previous) {
       await notifyOwner(connection.userChatId,
         `<b>🗑 Сообщение удалено</b>\n\nTelegram сообщил об удалении, но Ghost не получил исходный текст. Это бывает, если сообщение было отправлено до подключения или не входило в разрешённый доступ бота.`
