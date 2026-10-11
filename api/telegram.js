@@ -530,7 +530,8 @@ async function sendSettingsPrompt(chatId) {
   return telegram("sendMessage", {
     chat_id: chatId,
     text: `Откройте <a href="tg://settings/edit">настройки профиля Telegram</a>, пролистайте вниз и найдите «Автоматизация чатов». Затем вставьте <code>@${BOT_USERNAME}</code>.`,
-    parse_mode: "HTML"
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", url: "tg://settings/edit" }]] }
   });
 }
 
