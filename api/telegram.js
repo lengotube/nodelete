@@ -571,6 +571,17 @@ async function sendSettingsPrompt(chatId) {
 }
 
 async function commandHandler(message) {
+  if (message.web_app_data?.data) {
+    try {
+      const payload = JSON.parse(message.web_app_data.data);
+      const plan = PLANS[payload.plan];
+      if (payload.action === "group_invoice" && plan?.scope === "groups") {
+        return sendStarsInvoice(message.chat.id, payload.plan);
+      }
+    } catch {
+      return telegram("sendMessage", { chat_id: message.chat.id, text: "Не удалось определить выбранный пакет. Откройте раздел «Группы» ещё раз." });
+    }
+  }
   const text = message.text || "";
   const [rawCommand, argument] = text.split(/\s+/, 2);
   const command = rawCommand.toLowerCase().split("@")[0];
