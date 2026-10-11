@@ -30,13 +30,13 @@ const welcomeText = (appUrl) => `
 
 <b>Подключение за 30 секунд:</b>
 <tg-emoji emoji-id="5794182096603847292">1️⃣</tg-emoji> Скопируй username <b>${BRAND}</b>
-&#x20;      @${BOT_USERNAME} <tg-emoji emoji-id="5413573223092624530">↩️</tg-emoji> нажми
+&#x20;      <code>@${BOT_USERNAME}</code> <tg-emoji emoji-id="5413573223092624530">↩️</tg-emoji> нажми
 <tg-emoji emoji-id="5794303034292968945">2⃣</tg-emoji> Открой <a href="tg://settings/edit">настройки</a>
 &#x20;      <a href="tg://settings/edit">Telegram-профиля</a>
 <tg-emoji emoji-id="5794031944547178894">3⃣</tg-emoji> Найди пункт настроек
 &#x20;     <tg-emoji emoji-id="5469753237865275412">✨</tg-emoji> <b>Автоматизация чатов</b>
 <tg-emoji emoji-id="5793901252987330401">4⃣</tg-emoji> Вставь username <b>${BRAND}</b>
-&#x20;      @${BOT_USERNAME}
+&#x20;      <code>@${BOT_USERNAME}</code>
 &#x20;      и нажми <b>Добавить</b>
 
 <b>Частые вопросы:</b>
@@ -56,10 +56,10 @@ This works through an <b>official Telegram feature</b> — <a href="https://t.me
 
 <b>Connect in 30 seconds:</b>
 <tg-emoji emoji-id="5794182096603847292">1️⃣</tg-emoji> Copy the <b>${BRAND}</b> username
-&#x20;      @${BOT_USERNAME} <tg-emoji emoji-id="5413573223092624530">↩️</tg-emoji> tap it
+&#x20;      <code>@${BOT_USERNAME}</code> <tg-emoji emoji-id="5413573223092624530">↩️</tg-emoji> tap it
 <tg-emoji emoji-id="5794303034292968945">2⃣</tg-emoji> Open <a href="tg://settings/edit">Telegram profile settings</a>
 <tg-emoji emoji-id="5794031944547178894">3⃣</tg-emoji> Find <tg-emoji emoji-id="5469753237865275412">✨</tg-emoji> <b>Chat automation</b>
-<tg-emoji emoji-id="5793901252987330401">4⃣</tg-emoji> Paste @${BOT_USERNAME} and tap <b>Add</b>
+<tg-emoji emoji-id="5793901252987330401">4⃣</tg-emoji> Paste <code>@${BOT_USERNAME}</code> and tap <b>Add</b>
 
 <b>Frequently asked questions:</b>
 <a href="${appUrl}/app?screen=safety">Is it safe? ›</a>
@@ -529,8 +529,8 @@ async function sendBroadcastPreview(chatId, adminId) {
 async function sendSettingsPrompt(chatId) {
   return telegram("sendMessage", {
     chat_id: chatId,
-    text: "Жми кнопку ниже — откроется редактор профиля Telegram. Пролистай вниз и найди «Автоматизация чатов».",
-    reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", url: "tg://settings/edit" }]] }
+    text: `Откройте <a href="tg://settings/edit">настройки профиля Telegram</a>, пролистайте вниз и найдите «Автоматизация чатов». Затем вставьте <code>@${BOT_USERNAME}</code>.`,
+    parse_mode: "HTML"
   });
 }
 

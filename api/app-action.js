@@ -50,8 +50,8 @@ export default async function handler(request, response) {
     if (action === "settings") {
       await telegram("sendMessage", {
         chat_id: user.id,
-        text: `Откройте редактор профиля Telegram и найдите «Автоматизация чатов». Затем добавьте @${process.env.BOT_USERNAME || "ghostmsg_robot"}.`,
-        reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", url: "tg://settings/edit" }]] }
+        text: `Откройте <a href="tg://settings/edit">настройки профиля Telegram</a>, найдите «Автоматизация чатов» и добавьте <code>@${process.env.BOT_USERNAME || "ghostmsg_robot"}</code>.`,
+        parse_mode: "HTML"
       });
     } else if (action === "support") {
       await telegram("sendMessage", {
