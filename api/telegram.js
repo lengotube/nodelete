@@ -88,7 +88,7 @@ const keyboard = (language = "ru") => {
   const copy = LOCALE[language] || LOCALE.ru;
   return ({
   inline_keyboard: [
-    [{ text: copy.connect, icon_custom_emoji_id: "5411465691230411357", callback_data: "connect" }],
+    [{ text: copy.connect, icon_custom_emoji_id: "5411465691230411357", web_app: { url: appLink("connect") || botLink } }],
     [
       { text: copy.support, icon_custom_emoji_id: "5411350246804461567", url: SUPPORT_URL || process.env.COMMUNITY_URL || botLink },
       { text: copy.language, icon_custom_emoji_id: "5224450179368767019", callback_data: "language" }
@@ -428,13 +428,45 @@ async function sendUserExport(chatId) {
   if (!data.ok) throw new Error(`sendDocument: ${data.description || "Telegram API error"}`);
 }
 
-async function broadcast(message) {
+function broadcastKeyboard(rows = []) {
+  return rows.length ? { inline_keyboard: rows } : undefined;
+}
+
+function parseBroadcastButtons(value) {
+  const lines = String(value || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  if (lines.length > 20) throw new Error("Не больше 20 кнопок в одном посте.");
+  return lines.map((line) => {
+    const match = line.match(/^!([gbr])\s+(.+?)\s+-\s+(.+)$/i);
+    if (!match) throw new Error("Не удалось прочитать строку. Используйте формат: !g Текст кнопки - ссылка");
+    const [, color, rawLabel, rawTarget] = match;
+    const label = rawLabel.trim();
+    const target = rawTarget.trim();
+    if (!label || label.length > 56) throw new Error("Текст кнопки должен быть от 1 до 56 символов.");
+    const prefix = ({ g: "🟢", b: "🔵", r: "🔴" })[color.toLowerCase()];
+    const text = `${prefix} ${label}`;
+    if (/^(https?:\/\/|tg:\/\/)/i.test(target)) return [{ text, url: target }];
+    if (/^start(?:=|:)?/i.test(target)) {
+      const payload = target.replace(/^start(?:=|:)?/i, "").trim();
+      return [{ text, url: `https://t.me/${BOT_USERNAME}${payload ? `?start=${encodeURIComponent(payload)}` : ""}` }];
+    }
+    if (target.length > 55) throw new Error("Внутреннее действие кнопки слишком длинное.");
+    return [{ text, callback_data: `post:${target}` }];
+  });
+}
+
+async function broadcast(draft) {
   const ids = await members("users:active");
   let sent = 0;
   let invalid = 0;
   for (const id of ids) {
     try {
-      await telegram("copyMessage", { chat_id: Number(id), from_chat_id: message.chat.id, message_id: message.message_id });
+      await telegram("copyMessage", {
+        chat_id: Number(id),
+        from_chat_id: draft.sourceChatId,
+        message_id: draft.messageId,
+        reply_markup: broadcastKeyboard(draft.buttons)
+      });
       sent++;
     } catch (error) {
       if (/blocked|deactivated|chat not found|forbidden/i.test(String(error.message))) {
@@ -444,6 +476,54 @@ async function broadcast(message) {
     }
   }
   return { sent, invalid };
+}
+
+async function sendReferralList(chatId) {
+  const codes = (await members("referrals:codes")).sort();
+  const stats = (await Promise.all(codes.map((code) => referralStats(code)))).filter(Boolean);
+  const shown = stats.slice(0, 40);
+  const list = shown.length
+    ? shown.map((item) => `/ref_${item.code}: <b>${money(item.unique)}</b> 👥 (${money(item.price)} за пользователя)`).join("\n")
+    : "Пока нет созданных рекламных ссылок.";
+  const suffix = stats.length > shown.length ? `\n\nПоказаны первые ${shown.length} из ${stats.length}.` : "";
+  return telegram("sendMessage", {
+    chat_id: chatId,
+    text: `<b>🔗 Реферальные ссылки</b>\n\n${list}${suffix}\n\nКоманда /ref_linkname — полная статистика.\n/refssilkacheck_linkname — публичная статистика.`,
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: [
+      [{ text: "➕ Создать ссылку", callback_data: "admin:newref" }],
+      [{ text: "← Назад", callback_data: "admin:back" }]
+    ] }
+  });
+}
+
+function broadcastControls(stage = "draft") {
+  if (stage === "preview") return { inline_keyboard: [
+    [{ text: "Изменить", callback_data: "compose:edit" }, { text: "Отправить", callback_data: "compose:send" }],
+    [{ text: "Отмена", callback_data: "compose:cancel" }]
+  ] };
+  if (stage === "edit") return { inline_keyboard: [
+    [{ text: "Текст / медиа", callback_data: "compose:replace" }, { text: "Кнопки", callback_data: "compose:buttons" }],
+    [{ text: "← К предпросмотру", callback_data: "compose:preview" }, { text: "Отмена", callback_data: "compose:cancel" }]
+  ] };
+  return { inline_keyboard: [
+    [{ text: "Добавить кнопки", callback_data: "compose:buttons" }],
+    [{ text: "Предпросмотр", callback_data: "compose:preview" }, { text: "Отмена", callback_data: "compose:cancel" }]
+  ] };
+}
+
+async function sendBroadcastPreview(chatId, adminId) {
+  const flow = await get(`admin:flow:${adminId}`);
+  if (!flow?.sourceChatId || !flow?.messageId) return telegram("sendMessage", { chat_id: chatId, text: "Черновик рассылки не найден. Начните заново через «Рассылка»." });
+  const draft = { ...flow, type: "broadcast_confirm" };
+  await put(`admin:flow:${adminId}`, draft, 60 * 60);
+  await telegram("copyMessage", {
+    chat_id: chatId,
+    from_chat_id: draft.sourceChatId,
+    message_id: draft.messageId,
+    reply_markup: broadcastKeyboard(draft.buttons)
+  });
+  return telegram("sendMessage", { chat_id: chatId, text: "Проверьте превью поста.", reply_markup: broadcastControls("preview") });
 }
 
 async function sendSettingsPrompt(chatId) {
@@ -459,11 +539,34 @@ async function commandHandler(message) {
   const [rawCommand, argument] = text.split(/\s+/, 2);
   const command = rawCommand.toLowerCase().split("@")[0];
   const flow = message.from && isAdmin(message.from.id) ? await get(`admin:flow:${message.from.id}`) : null;
-  if (flow && text && !text.startsWith("/")) {
-    if (flow.type === "broadcast") {
-      await remove(`admin:flow:${message.from.id}`);
-      const result = await broadcast(message);
-      return telegram("sendMessage", { chat_id: message.chat.id, text: `Рассылка завершена.\nДоставлено: <b>${result.sent}</b>\nНевалидных: <b>${result.invalid}</b>`, parse_mode: "HTML", reply_markup: adminKeyboard() });
+  if (flow && (!text || !text.startsWith("/"))) {
+    if (flow.type === "broadcast_post") {
+      const draft = {
+        type: "broadcast_draft",
+        sourceChatId: message.chat.id,
+        messageId: message.message_id,
+        buttons: flow.buttons || []
+      };
+      await put(`admin:flow:${message.from.id}`, draft, 60 * 60);
+      return telegram("sendMessage", {
+        chat_id: message.chat.id,
+        text: "Пост сохранён. Форматирование, Premium Emoji и медиа будут скопированы без изменений.",
+        reply_markup: broadcastControls()
+      });
+    }
+    if (flow.type === "broadcast_buttons") {
+      try {
+        const draft = { ...flow, type: "broadcast_draft", buttons: parseBroadcastButtons(text) };
+        await put(`admin:flow:${message.from.id}`, draft, 60 * 60);
+        return telegram("sendMessage", {
+          chat_id: message.chat.id,
+          text: `Кнопки сохранены: <b>${draft.buttons.length}</b>.`,
+          parse_mode: "HTML",
+          reply_markup: broadcastControls()
+        });
+      } catch (error) {
+        return telegram("sendMessage", { chat_id: message.chat.id, text: `⚠️ ${escapeHtml(error.message)}`, parse_mode: "HTML" });
+      }
     }
     if (flow.type === "ref_name") {
       const code = text.trim().toLowerCase();
@@ -475,7 +578,12 @@ async function commandHandler(message) {
       try {
         const referral = await createReferral(flow.code, text.trim().replace(",", "."), message.from.id);
         await remove(`admin:flow:${message.from.id}`);
-        return telegram("sendMessage", { chat_id: message.chat.id, parse_mode: "HTML", text: `<b>Рекламная ссылка создана</b>\n\nhttps://t.me/${BOT_USERNAME}?start=${referral.code}\n\nЦена за пользователя: <b>${money(referral.price)}</b>`, reply_markup: adminKeyboard() });
+        return telegram("sendMessage", {
+          chat_id: message.chat.id,
+          parse_mode: "HTML",
+          text: `<b>Рекламная ссылка создана</b>\n\nhttps://t.me/${BOT_USERNAME}?start=${referral.code}\n\nЦена за пользователя: <b>${money(referral.price)}</b>`,
+          reply_markup: { inline_keyboard: [[{ text: "К списку ссылок", callback_data: "admin:referrals" }], [{ text: "← Админ-панель", callback_data: "admin:back" }]] }
+        });
       } catch (error) {
         return telegram("sendMessage", { chat_id: message.chat.id, text: escapeHtml(error.message), parse_mode: "HTML" });
       }
@@ -534,10 +642,14 @@ async function callbackHandler(callback) {
     if (suppliedId === "back") return sendAdminPanel(callback.message.chat.id);
     if (suppliedId === "stats") return sendAdminStats(callback.message.chat.id);
     if (suppliedId === "broadcast") {
-      await put(`admin:flow:${callback.from.id}`, { type: "broadcast" }, 15 * 60);
-      return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Пришлите сообщение для рассылки. Поддерживаются текст, фото, видео и документы. После отправки оно будет скопировано пользователям." });
+      await put(`admin:flow:${callback.from.id}`, { type: "broadcast_post", buttons: [] }, 60 * 60);
+      return telegram("sendMessage", {
+        chat_id: callback.message.chat.id,
+        text: "Отправьте готовый пост одним сообщением. Поддерживаются текст с форматированием и Premium Emoji, фото, видео, документы и подписи — получатели увидят точную копию."
+      });
     }
-    if (suppliedId === "referrals") {
+    if (suppliedId === "referrals") return sendReferralList(callback.message.chat.id);
+    if (suppliedId === "newref") {
       await put(`admin:flow:${callback.from.id}`, { type: "ref_name" }, 15 * 60);
       return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Выберите название для ссылки (linkname).\n\nРазрешены латинские буквы, цифры, _ и -; от 3 до 48 символов." });
     }
@@ -548,6 +660,49 @@ async function callbackHandler(callback) {
       await removeFromSet("users:invalid", ...invalid);
       return telegram("sendMessage", { chat_id: callback.message.chat.id, text: `Удалено из базы рассылки: <b>${invalid.length}</b>.`, parse_mode: "HTML", reply_markup: adminKeyboard() });
     }
+  }
+  if (action === "compose") {
+    if (!isAdmin(callback.from.id)) return telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Нет доступа", show_alert: true });
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id });
+    const flowKey = `admin:flow:${callback.from.id}`;
+    const flow = await get(flowKey);
+    if (suppliedId === "cancel") {
+      await remove(flowKey);
+      return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Рассылка отменена.", reply_markup: adminKeyboard() });
+    }
+    if (!flow?.sourceChatId || !flow?.messageId) {
+      return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Черновик рассылки не найден. Начните заново через «Рассылка»." });
+    }
+    if (suppliedId === "buttons") {
+      await put(flowKey, { ...flow, type: "broadcast_buttons" }, 60 * 60);
+      return telegram("sendMessage", {
+        chat_id: callback.message.chat.id,
+        text: "Отправьте кнопки одним сообщением — по одной в строке.\n\n<b>Формат:</b>\n!g Получить доступ - https://example.com\n!b Открыть Ghost - start=settings\n!r Внутренняя команда - action_name\n\n<b>Цвет:</b> !g — зелёный, !b — синий, !r — красный. Telegram не позволяет задавать реальный цвет inline-кнопки, поэтому цвет отображается понятной меткой в её тексте.",
+        parse_mode: "HTML"
+      });
+    }
+    if (suppliedId === "preview") return sendBroadcastPreview(callback.message.chat.id, callback.from.id);
+    if (suppliedId === "edit") {
+      await put(flowKey, { ...flow, type: "broadcast_draft" }, 60 * 60);
+      return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Что изменить в посте?", reply_markup: broadcastControls("edit") });
+    }
+    if (suppliedId === "replace") {
+      await put(flowKey, { ...flow, type: "broadcast_post" }, 60 * 60);
+      return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Отправьте новую версию поста. Его форматирование, Premium Emoji и медиа будут сохранены; уже созданные кнопки останутся." });
+    }
+    if (suppliedId === "send") {
+      await remove(flowKey);
+      const result = await broadcast(flow);
+      return telegram("sendMessage", {
+        chat_id: callback.message.chat.id,
+        text: `Рассылка завершена.\nДоставлено: <b>${result.sent}</b>\nНевалидных: <b>${result.invalid}</b>`,
+        parse_mode: "HTML",
+        reply_markup: adminKeyboard()
+      });
+    }
+  }
+  if (action === "post") {
+    return telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Готово" });
   }
   if (action === "language") {
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
