@@ -3,6 +3,12 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 const API = "https://api.telegram.org";
 const BRAND = process.env.BOT_BRAND || "Ghost";
 const SUPPORT_URL = process.env.SUPPORT_URL || "https://t.me/ghostmsg_support_bot?start=help";
+const GROUP_PLANS = {
+  group5: { title: "Ghost для 5 групп", stars: 499, groups: 5 },
+  group10: { title: "Ghost для 10 групп", stars: 749, groups: 10 },
+  group20: { title: "Ghost для 20 групп", stars: 1249, groups: 20 },
+  group50: { title: "Ghost для 50 групп", stars: 3999, groups: 50 }
+};
 
 function verifiedUser(initData) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -60,6 +66,17 @@ export default async function handler(request, response) {
         text: `Поддержка ${BRAND} готова помочь. Откройте чат — команда увидит ваше сообщение.`,
         reply_markup: { inline_keyboard: [[{ text: "💬 Написать в поддержку", url: SUPPORT_URL }]] }
       });
+    } else if (action === "group_invoice") {
+      const plan = GROUP_PLANS[request.body?.plan];
+      if (!plan) return responseJson(response, 400, { ok: false, message: "Выбранный пакет не найден." });
+      const invoiceUrl = await telegram("createInvoiceLink", {
+        title: plan.title,
+        description: `Доступ к мониторингу до ${plan.groups} групп на 30 дней.`,
+        payload: `ghost-plan:${request.body.plan}`,
+        currency: "XTR",
+        prices: [{ label: `${plan.groups} групп — Ghost`, amount: plan.stars }]
+      });
+      return responseJson(response, 200, { ok: true, invoiceUrl });
     } else {
       return responseJson(response, 400, { ok: false, message: "Unknown Mini App action." });
     }
