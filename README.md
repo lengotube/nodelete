@@ -1,4 +1,4 @@
-# Ghost — @ghostmsg_robot
+# Ghost — `@ghostmsg_robot`
 
 Ghost — Telegram-бот и Mini App для контроля новых разрешённых событий и резервных копий. Владелец аккаунта самостоятельно подключает бота через «Автоматизацию чатов», после чего бот получает только те новые события, которые Telegram разрешает передавать. История до подключения недоступна.
 
@@ -19,7 +19,7 @@ Ghost — Telegram-бот и Mini App для контроля новых раз�
 3. Выберите репозиторий `nodelete`, оставьте настройки сборки пустыми и нажмите **Deploy**. Это статический сайт, пакеты устанавливать не нужно.
 4. После завершения скопируйте адрес вида `https://nodelete-robot-xxx.vercel.app`.
 5. В настройках Vercel откройте **Settings → Environment Variables** и добавьте `PUBLIC_APP_URL` со скопированным адресом. Затем сделайте **Redeploy**.
-6. В @BotFather откройте настройки @ghostmsg_robot → **Menu Button** и укажите `https://ваш-домен.vercel.app/app`.
+6. В @BotFather откройте настройки `@ghostmsg_robot` → **Menu Button** и укажите `https://ваш-домен.vercel.app/app`.
 
 ## Запуск бота на VPS
 
