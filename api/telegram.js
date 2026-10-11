@@ -9,22 +9,23 @@ const PAYMENT_PLACEHOLDER = "Оплата появится здесь после
 const SUPPORT_PLACEHOLDER = "https://t.me/";
 
 const welcomeText = (appUrl) => `
-<b>💬 Восстанавливает личные сообщения</b>
-<b>📢 Восстанавливает сообщения в группах</b>
-<b>📄 Делает резервную копию выбранных переписок</b>
+<b><tg-emoji emoji-id="5413857558517553804">💬</tg-emoji></b><b> Восстанавливает личные сообщения</b>
+<b><tg-emoji emoji-id="5413822103562524971">📢</tg-emoji></b><b> Восстанавливает сообщения в группах</b>
+<b><tg-emoji emoji-id="5411515199318431537">📄</tg-emoji></b><b> Делает резервную копию выбранных переписок</b>
 
 Это работает через <b>официальную функцию Telegram</b> — <a href="https://t.me/durov/519">пост Павла Дурова</a>.
-👮 Подробнее <a href="${appUrl}/app?screen=safety">о безопасности ›</a>
+<tg-emoji emoji-id="5411510242926172833">👮</tg-emoji> Подробнее <a href="${appUrl}/app?screen=safety">о безопасности ›</a>
 
 <b>Подключение за 30 секунд:</b>
-1️⃣ Скопируй username <b>NoDelete</b>
-      @nodelete_robot ↩️ нажми
-2️⃣ Открой <a href="tg://settings/edit">настройки Telegram-профиля</a>
-3️⃣ Найди пункт настроек
-      ✨ <b>Автоматизация чатов</b>
-4️⃣ Вставь username <b>NoDelete</b>
-      @nodelete_robot
-      и нажми <b>Добавить</b>
+<tg-emoji emoji-id="5794182096603847292">1️⃣</tg-emoji> Скопируй username <b>NoDelete</b>
+&#x20;      @nodelete_robot <tg-emoji emoji-id="5413573223092624530">↩️</tg-emoji> нажми
+<tg-emoji emoji-id="5794303034292968945">2⃣</tg-emoji> Открой <a href="tg://settings/edit">настройки</a>
+&#x20;      <a href="tg://settings/edit">Telegram-профиля</a>
+<tg-emoji emoji-id="5794031944547178894">3⃣</tg-emoji> Найди пункт настроек
+&#x20;     <tg-emoji emoji-id="5469753237865275412">✨</tg-emoji> <b>Автоматизация чатов</b>
+<tg-emoji emoji-id="5793901252987330401">4⃣</tg-emoji> Вставь username <b>NoDelete</b>
+&#x20;      @nodelete_robot
+&#x20;      и нажми <b>Добавить</b>
 
 <b>Частые вопросы:</b>
 <a href="${appUrl}/app?screen=safety">Насколько это безопасно? ›</a>
@@ -50,10 +51,10 @@ const appLink = (screen = "connect") => APP_URL ? `${APP_URL}/app?screen=${scree
 
 const keyboard = () => ({
   inline_keyboard: [
-    [{ text: "🫣 Подключить", web_app: { url: appLink("connect") || "https://t.me/nodelete_robot" } }],
+    [{ text: "Подключить", icon_custom_emoji_id: "5411465691230411357", web_app: { url: appLink("connect") || "https://t.me/nodelete_robot" } }],
     [
-      { text: "👥 Сообщество", url: process.env.COMMUNITY_URL || "https://t.me/" },
-      { text: "🌎 Язык", callback_data: "language" }
+      { text: "Сообщество", icon_custom_emoji_id: "5411350246804461567", url: process.env.COMMUNITY_URL || "https://t.me/" },
+      { text: "Язык", icon_custom_emoji_id: "5224450179368767019", callback_data: "language" }
     ]
   ]
 });
