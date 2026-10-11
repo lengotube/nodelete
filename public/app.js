@@ -1,122 +1,41 @@
 const tg = window.Telegram?.WebApp;
-tg?.ready();
-tg?.expand();
+tg?.ready(); tg?.expand();
 
+const BOT = "ghostmsg_robot";
+const SUPPORT_BOT = "ghostmsg_support_bot";
 const screen = document.querySelector("#screen");
-const state = { page: new URLSearchParams(location.search).get("screen") || "home", theme: localStorage.getItem("nodelete-theme") || "dark" };
-const pages = new Set(["home", "connect", "backup", "groups", "help", "safety", "plans", "settings"]);
-
-const go = (page) => {
-  state.page = pages.has(page) ? page : "home";
-  const url = new URL(location.href);
-  url.searchParams.set("screen", state.page);
-  history.replaceState({}, "", url);
-  render();
-  window.scrollTo({ top: 0, behavior: "smooth" });
+const state = { page: new URLSearchParams(location.search).get("screen") || "home", lang: localStorage.getItem("ghost-lang") || "ru", theme: localStorage.getItem("ghost-theme") || "dark" };
+const dictionary = {
+  ru: {
+    nav: ["Главная", "Архив", "Тарифы", "Настройки"], brand: "ghost", eyebrow: "незаметная защита чатов", hero: "Сообщение исчезло?\nУ Ghost осталась тень.", heroCopy: "Контроль новых изменений и резервные копии — только после вашего явного подключения.", connect: "Подключить Ghost", safety: "Как это устроено", days: "дней хранения", fast: "30 секунд", toConnect: "на подключение", official: "Официальный доступ Telegram", officialCopy: "Ghost работает через разрешённую автоматизацию чатов. Никаких паролей и сторонних клиентов.", edit: "Изменения", editCopy: "Сравните исходный текст и новую версию.", delete: "Удаления", deleteCopy: "Получите копию, если Telegram передал событие удаления.", backup: "Архив", backupCopy: "Выбирайте нужные чаты для резервного хранения.", panel: "Панель Ghost", waiting: "Подключение ожидает", personal: "Личные сообщения", personalCopy: "Подключите автоматизацию чатов", groups: "Группы", groupsCopy: "Инструкция для администратора", backups: "Резервные копии", backupsCopy: "Выберите переписки", deletions: "удалений", edits: "правок", support: "Поддержка Ghost", back: "На главную", language: "Язык", theme: "Тема", dark: "Тёмная", light: "Светлая", settings: "Настройки", plans: "Тарифы", archive: "Резервные копии", pay: "Оплатить в Stars", popular: "выгодно", payNote: "Оплата проходит в Telegram Stars. Доступ активируется только после успешного платежа.", copy: "Копировать", copied: "Скопировано ✓", openSettings: "Открыть настройки Telegram", chooseLang: "Выберите язык", ru: "Русский", en: "English", connected: "Подключите Ghost за 30 секунд", connectIntro: "Telegram передаёт Ghost только новые события из разрешённых вами чатов.", safetyTitle: "Безопасность без фокусов", safetyIntro: "Вы всегда видите, что подключаете и можете отключить доступ в Telegram.", helpTitle: "Нужна помощь?", helpIntro: "Четыре быстрые проверки до обращения в поддержку.", groupTitle: "Ghost в группах", groupIntro: "Добавляйте бота только в группы, которыми управляете.", archiveTitle: "Ваши резервные копии", archiveIntro: "Сохранение начинается после подключения — старой истории Telegram не передаёт.", planNames: {lite:"Lite",plus:"Plus",prime:"Prime",ultra:"Ultra"}, planTerms: {lite:"Неделя",plus:"Месяц",prime:"Год",ultra:"Навсегда"}
+  },
+  en: {
+    nav: ["Home", "Archive", "Plans", "Settings"], brand: "ghost", eyebrow: "quiet chat protection", hero: "A message vanished?\nGhost kept the trace.", heroCopy: "Track new changes and make backups only after you explicitly connect the bot.", connect: "Connect Ghost", safety: "How it works", days: "days of storage", fast: "30 seconds", toConnect: "to connect", official: "Official Telegram access", officialCopy: "Ghost uses permitted chat automation. No passwords and no modified clients.", edit: "Edits", editCopy: "Compare the original text with its updated version.", delete: "Deletions", deleteCopy: "Receive a copy if Telegram sends a deletion event.", backup: "Archive", backupCopy: "Choose chats for protected backups.", panel: "Ghost console", waiting: "Waiting for connection", personal: "Private messages", personalCopy: "Connect Chat Automation", groups: "Groups", groupsCopy: "Admin setup guide", backups: "Backups", backupsCopy: "Choose conversations", deletions: "deletions", edits: "edits", support: "Ghost support", back: "Home", language: "Language", theme: "Theme", dark: "Dark", light: "Light", settings: "Settings", plans: "Plans", archive: "Backups", pay: "Pay with Stars", popular: "best value", payNote: "Payment is processed in Telegram Stars. Access is activated only after a successful payment.", copy: "Copy", copied: "Copied ✓", openSettings: "Open Telegram settings", chooseLang: "Choose language", ru: "Русский", en: "English", connected: "Connect Ghost in 30 seconds", connectIntro: "Telegram only sends Ghost new events from chats you allow.", safetyTitle: "Safety without tricks", safetyIntro: "You see exactly what you connect and can revoke access in Telegram at any time.", helpTitle: "Need help?", helpIntro: "Four quick checks before contacting support.", groupTitle: "Ghost in groups", groupIntro: "Add the bot only to groups you manage.", archiveTitle: "Your backups", archiveIntro: "Saving begins after connection — Telegram never provides old history.", planNames: {lite:"Lite",plus:"Plus",prime:"Prime",ultra:"Ultra"}, planTerms: {lite:"Week",plus:"Month",prime:"Year",ultra:"Forever"}
+  }
 };
+const plans = [{id:"lite",stars:180},{id:"plus",stars:360},{id:"prime",stars:1700,popular:true},{id:"ultra",stars:4370}];
+const t = () => dictionary[state.lang];
+const go = (page) => { state.page = page; const url = new URL(location.href); url.searchParams.set("screen", page); history.replaceState({}, "", url); render(); window.scrollTo({top:0,behavior:"smooth"}); };
+const botLink = (path = "") => `https://t.me/${BOT}${path}`;
+const support = () => { const url = `https://t.me/${SUPPORT_BOT}?start=help`; tg?.openTelegramLink?.(url) || (location.href = url); };
+const pay = (plan) => { tg?.openTelegramLink?.(botLink(`?start=buy_${plan}`)) || (location.href = botLink(`?start=buy_${plan}`)); };
+const supportButton = () => `<button class="support-button" data-support><i class="pulse"></i> 💬 ${t().support} <span>›</span></button>`;
+const pageHead = (title,intro) => `<button class="back" data-go="home">← ${t().back}</button><section class="page-head"><h1>${title}</h1><p>${intro}</p></section>`;
 
-const copy = async () => {
-  await navigator.clipboard?.writeText("@nodelete_robot");
-  const button = document.querySelector("[data-copy]");
-  if (button) { button.textContent = "Скопировано ✓"; setTimeout(() => { button.textContent = "Копировать"; }, 1500); }
-};
+function home(){const x=t();return `<section class="hero"><p class="eyebrow">${x.eyebrow}</p><h1>${x.hero.replace("\n","<br>")}</h1><p class="hero-copy">${x.heroCopy}</p><div class="hero-actions"><button class="primary" data-go="connect">✦ ${x.connect} <span>→</span></button><button class="ghost-button" data-go="safety">${x.safety}</button></div></section>
+<section class="section"><p class="section-label">${x.official}</p><h2>${x.officialCopy}</h2><div class="metric-grid"><div class="metric"><b>${x.fast}</b><span>${x.toConnect}</span></div><div class="metric"><b>90</b><span>${x.days}</span></div></div></section>
+<section class="section"><div class="feature-grid"><article class="card"><i class="feature-icon">✎</i><h3>${x.edit}</h3><p>${x.editCopy}</p></article><article class="card"><i class="feature-icon">◌</i><h3>${x.delete}</h3><p>${x.deleteCopy}</p></article><article class="card"><i class="feature-icon">◫</i><h3>${x.backup}</h3><p>${x.backupCopy}</p></article></div></section>
+<section class="section"><p class="section-label">${x.panel}</p><div class="dashboard"><div class="profile"><i class="mini-avatar"></i><div><strong>${x.panel}</strong><small>${x.waiting}</small></div><span class="status">●</span></div><div class="dashboard-actions"><button class="action-row" data-go="connect"><i class="row-icon">⌁</i><span class="row-copy"><strong>${x.personal}</strong><small>${x.personalCopy}</small></span><b class="chevron">›</b></button><button class="action-row" data-go="groups"><i class="row-icon">+</i><span class="row-copy"><strong>${x.groups}</strong><small>${x.groupsCopy}</small></span><b class="chevron">›</b></button><button class="action-row" data-go="backup"><i class="row-icon">◫</i><span class="row-copy"><strong>${x.backups}</strong><small>${x.backupsCopy}</small></span><b class="chevron">›</b></button></div><div class="statline"><span><i class="dot"></i>0 ${x.deletions}</span><span><i class="dot blue"></i>0 ${x.edits}</span></div></div></section>${supportButton()}`}
 
-const support = () => {
-  tg?.showAlert?.("Поддержка подключается. Здесь появится ссылка на аккаунт команды.");
-  if (!tg?.showAlert) alert("Поддержка подключается. Здесь появится ссылка на аккаунт команды.");
-};
-
-const hero = () => `
-  <section class="hero">
-    <p class="eyebrow">контроль ваших чатов</p>
-    <h1>Удалили или изменили сообщение?</h1>
-    <p>NoDelete бережно фиксирует новые события, которые Telegram передаёт после подключения.</p>
-    <div class="hero-grid"><div class="mini-stat"><strong>30 сек.</strong><span>на подключение</span></div><div class="mini-stat"><strong>90 дней</strong><span>срок хранения</span></div></div>
-    <button class="primary" data-go="connect">⚙ Подключить NoDelete <span>→</span></button>
-  </section>`;
-
-const dashboard = () => `
-  <section class="dashboard">
-    <div class="profile"><div class="avatar-letter">N</div><div><strong>Ваш контроль</strong><small>Подключение ожидает</small></div><span class="status">●</span></div>
-    <div class="dashboard-actions">
-      <button class="action-row" data-go="connect"><span class="row-icon">⌁</span><span class="row-copy"><strong>Личные сообщения</strong><small>Подключите Chat automation</small></span><span class="chevron">›</span></button>
-      <button class="action-row" data-go="groups"><span class="row-icon">+</span><span class="row-copy"><strong>Группы</strong><small>Инструкция для администратора</small></span><span class="chevron">›</span></button>
-      <button class="action-row" data-go="backup"><span class="row-icon">▣</span><span class="row-copy"><strong>Резервные копии</strong><small>Выберите нужные переписки</small></span><span class="chevron">›</span></button>
-    </div>
-    <div class="statline"><span><i class="dot"></i>0 удалений</span><span><i class="dot blue"></i>0 правок</span></div>
-  </section>`;
-
-const home = () => `${hero()}
-  <section class="section"><p class="section-label">Как это работает</p><h2>Не магия. Официальный доступ Telegram.</h2><p class="section-intro">После явного подключения Telegram присылает боту новые сообщения и события об их изменении. История до подключения недоступна.</p>
-  <div class="feature-grid"><article class="card"><div class="feature-icon">✎</div><h3>Изменения</h3><p>Сравнивайте текст до и после редактирования.</p></article><article class="card"><div class="feature-icon">◌</div><h3>Удаления</h3><p>Получайте копию, если сообщение удалили.</p></article><article class="card"><div class="feature-icon">▣</div><h3>Архив</h3><p>Выбирайте чаты для резервного хранения.</p></article></div></section>
-  <section class="section"><p class="section-label">Панель управления</p>${dashboard()}</section>
-  <section class="section notice"><strong>Ваши данные — под вашим контролем.</strong><br>В Mini App доступны инструкции, управление подключением и удаление сохранённых данных.</section>
-  ${supportButton()}`;
-
-const pageHead = (title, intro) => `<button class="back" data-go="home">← На главную</button><section class="page-head"><h1>${title}</h1><p>${intro}</p></section>`;
-const supportButton = () => `<button class="support-button" data-support><span class="pulse"></span> 💬 Поддержка 24/7 <span>›</span></button>`;
-
-const connect = () => `${pageHead("Подключить за 30 секунд", "NoDelete начнёт обрабатывать события только после того, как вы сами добавите его в Автоматизацию чатов Telegram.")}
-  <div class="step-list">
-    <article class="step"><span class="step-num">1</span><div><strong>Скопируйте username</strong><p>Он понадобится в настройках Telegram.</p><span class="code-chip">@nodelete_robot <button data-copy>Копировать</button></span></div></article>
-    <article class="step"><span class="step-num">2</span><div><strong>Откройте профиль Telegram</strong><p>Нажмите «Изменить» в верхней части своего профиля.</p></div></article>
-    <article class="step"><span class="step-num">3</span><div><strong>Найдите «Автоматизация чатов»</strong><p>Прокрутите список настроек вниз до этого пункта.</p></div></article>
-    <article class="step"><span class="step-num">4</span><div><strong>Добавьте @nodelete_robot</strong><p>Вставьте username, выберите доступные чаты и подтвердите подключение.</p></div></article>
-  </div>
-  <section class="section notice"><strong>Важно.</strong> Сообщения, отправленные до подключения, Telegram боту не передаёт. Это ограничение платформы.</section>
-  <a class="primary" href="tg://settings/edit">⚙ Открыть настройки Telegram <span>›</span></a>${supportButton()}`;
-
-const backup = () => `${pageHead("Резервные копии", "Архив сохраняет новые сообщения выбранной переписки с момента подключения.")}
-  <article class="info-card"><h3><span class="number-pill">1</span>Сначала подключите NoDelete</h3><p>Архивация использует то же подключение через Автоматизацию чатов. Без него Telegram не передаёт новые сообщения боту.</p></article>
-  <article class="info-card"><h3><span class="number-pill">2</span>Выберите переписку</h3><p>В будущем здесь появится выбор чата и оплата архива. Можно будет включать несколько отдельных архивов.</p><div class="placeholder">⌛ Оплата и выбор чата находятся в подготовке.</div></article>
-  <article class="info-card"><h3><span class="number-pill">3</span>Что попадает в архив</h3><ul><li>Новые сообщения и доступные Telegram вложения после подключения.</li><li>История до подключения не копируется.</li><li>Срок хранения по умолчанию — до 90 дней.</li></ul></article>
-  <article class="info-card"><h3><span class="number-pill">4</span>Ваши данные</h3><p>Хранение и экспорт должны быть описаны в вашей политике конфиденциальности до публичного запуска. В боте доступна команда <code>/my_data</code> для удаления данных.</p></article>${supportButton()}`;
-
-const groups = () => `${pageHead("Работа в группах", "Для групп нужны права администратора — это требование Telegram, а не дополнительный доступ NoDelete.")}
-  <article class="info-card"><h3><span class="number-pill">1</span>Подключите группу</h3><p>Добавьте @nodelete_robot в нужную группу через список администраторов. Выбирайте только группы, которыми управляете.</p></article>
-  <article class="info-card"><h3><span class="number-pill">2</span>Выдайте только нужные права</h3><p>Проверьте список разрешений в Telegram перед подтверждением. Не включайте функции, которые не нужны вашему сценарию.</p></article>
-  <article class="info-card"><h3><span class="number-pill">3</span>Проверьте тестовым сообщением</h3><p>Отправьте сообщение после добавления бота, отредактируйте или удалите его и убедитесь, что уведомление пришло владельцу.</p></article>
-  <section class="notice"><strong>Ограничение.</strong> NoDelete не получает историю, которая существовала до добавления, и не должен использоваться для мониторинга людей без их согласия.</section>${supportButton()}`;
-
-const help = () => `${pageHead("Не приходит уведомление?", "Проверьте эти пункты — обычно проблема решается за минуту.")}
-  <article class="info-card"><h3>1. Проверьте подключение</h3><p>В настройках профиля Telegram откройте «Автоматизация чатов» и убедитесь, что @nodelete_robot активен.</p></article>
-  <article class="info-card"><h3>2. Проверьте время события</h3><p>Бот реагирует только на новые события после подключения. Старые сообщения не восстановить через Bot API.</p></article>
-  <article class="info-card"><h3>3. Проверьте доступ чата</h3><p>В подключении должны быть разрешены нужные чаты. Для групп бот должен быть добавлен администратором.</p></article>
-  <article class="info-card"><h3>4. Нужна помощь?</h3><p>Кнопка поддержки сейчас ведёт в заглушку. Замените ссылку в проекте после создания аккаунта поддержки.</p></article>${supportButton()}`;
-
-const safety = () => `${pageHead("Это безопасно?", "Безопасность строится на прозрачных настройках, минимальном доступе и вашем контроле.")}
-  <article class="info-card"><h3><span class="number-pill">1</span>Официальная функция Telegram</h3><p>Подключение происходит через встроенную Автоматизацию чатов / Business Bot API. Не нужен модифицированный клиент и не требуется пароль от аккаунта.</p><p><a href="https://t.me/durov/519">Открыть анонс Telegram ›</a></p></article>
-  <article class="info-card"><h3><span class="number-pill">2</span>Только после подключения</h3><p>Bot API присылает только новые сообщения и изменения из разрешённых вами чатов. Переписка до подключения недоступна.</p></article>
-  <article class="info-card"><h3><span class="number-pill">3</span>Шифрование перед хранением</h3><p>В этой сборке текст сообщения шифруется AES‑256‑GCM до записи в Vercel KV. Ключ хранится отдельно в переменных окружения.</p></article>
-  <article class="info-card"><h3><span class="number-pill">4</span>Полный контроль</h3><p>Вы можете отключить автоматизацию в Telegram и удалить сохранённые данные командой <code>/my_data</code>.</p></article>${supportButton()}`;
-
-const plans = () => `${pageHead("Тарифы", "Выберите формат доступа. Подключение оплаты будет добавлено отдельным этапом.")}
-  <section class="plan-grid">
-    <article class="card plan"><h3>Lite</h3><strong>180 ⭐</strong><small>Неделя</small><button class="secondary" data-payment>Выбрать</button></article>
-    <article class="card plan"><h3>Plus</h3><strong>360 ⭐</strong><small>Месяц</small><button class="secondary" data-payment>Выбрать</button></article>
-    <article class="card plan selected"><span class="badge">выгодно</span><h3>Prime</h3><strong>1700 ⭐</strong><small>Год</small><button class="secondary" data-payment>Выбрать</button></article>
-    <article class="card plan"><h3>Ultra</h3><strong>4370 ⭐</strong><small>Навсегда</small><button class="secondary" data-payment>Выбрать</button></article>
-  </section><section class="section placeholder">💳 Платёжный провайдер пока не подключён. Карточки показаны как интерфейсная заготовка и не создают списаний.</section>${supportButton()}`;
-
-const settings = () => `${pageHead("Настройки", "Управляйте интерфейсом и переходами в сервисе.")}
-  <section class="dashboard-actions"><button class="setting-row" data-support><span class="row-icon">◌</span><span class="row-copy"><strong>Поддержка</strong><small>Ссылка будет добавлена позже</small></span><span class="chevron">›</span></button><button class="setting-row" data-language><span class="row-icon">◎</span><span class="row-copy"><strong>Язык</strong><small>Русский</small></span><span class="chevron">›</span></button><button class="setting-row" id="theme-setting"><span class="row-icon">☾</span><span class="row-copy"><strong>Тема</strong><small>${state.theme === "light" ? "Светлая" : "Тёмная"}</small></span><span class="chevron">›</span></button></section>
-  <section class="section"><p class="section-label">Данные</p><button class="setting-row" data-go="safety"><span class="row-icon">⌁</span><span class="row-copy"><strong>О безопасности</strong><small>Доступ, хранение и удаление</small></span><span class="chevron">›</span></button></section>${supportButton()}`;
-
-const languages = () => `<section class="section"><p class="section-label">Язык</p><div class="language-list">${["🇷🇺 Русский", "🇬🇧 English", "🇺🇦 Українська", "🇪🇸 Español", "🇺🇿 O‘zbek"].map((name, index) => `<button class="action-row language ${index === 0 ? "selected" : ""}" data-language><span>${name}</span><span class="check">${index === 0 ? "✓" : ""}</span></button>`).join("")}</div></section>`;
-
-const templates = { home, connect, backup, groups, help, safety, plans, settings };
-function render() {
-  document.body.classList.toggle("light", state.theme === "light");
-  screen.innerHTML = templates[state.page]();
-  document.querySelectorAll("[data-go]").forEach((element) => element.addEventListener("click", () => go(element.dataset.go)));
-  document.querySelectorAll("[data-copy]").forEach((element) => element.addEventListener("click", copy));
-  document.querySelectorAll("[data-support]").forEach((element) => element.addEventListener("click", support));
-  document.querySelectorAll("[data-payment]").forEach((element) => element.addEventListener("click", () => tg?.showAlert?.("Оплата в разработке.") || alert("Оплата в разработке.")));
-  document.querySelectorAll("[data-language]").forEach((element) => element.addEventListener("click", () => { const existing = document.querySelector(".language-list"); if (existing) return; screen.insertAdjacentHTML("beforeend", languages()); document.querySelectorAll("[data-language]").forEach((button) => button.addEventListener("click", () => {})); }));
-  document.querySelector("#theme-setting")?.addEventListener("click", toggleTheme);
-  document.querySelectorAll(".bottom-nav [data-go]").forEach((element) => element.classList.toggle("active", element.dataset.go === state.page || (state.page === "connect" && element.dataset.go === "home")));
-}
-function toggleTheme() { state.theme = state.theme === "light" ? "dark" : "light"; localStorage.setItem("nodelete-theme", state.theme); render(); }
-document.querySelector("#theme-toggle").addEventListener("click", toggleTheme);
-document.querySelectorAll(".bottom-nav [data-go]").forEach((element) => element.addEventListener("click", () => go(element.dataset.go)));
-render();
+function connect(){const x=t();const steps=state.lang==="ru"?[["Скопируйте username","Он понадобится в настройках Telegram."],["Откройте профиль Telegram","Нажмите «Изменить» в верхней части профиля."],["Найдите «Автоматизация чатов»","Прокрутите настройки до этого пункта."],["Добавьте @ghostmsg_robot","Выберите доступные чаты и подтвердите подключение."]]:[["Copy the username","You will need it in Telegram settings."],["Open your Telegram profile","Tap Edit at the top of your profile."],["Find Chat Automation","Scroll down in your profile settings."],["Add @ghostmsg_robot","Choose allowed chats and confirm the connection."]];return `${pageHead(x.connected,x.connectIntro)}<div class="step-list">${steps.map((s,i)=>`<article class="step"><b class="step-num">${i+1}</b><div><strong>${s[0]}</strong><p>${s[1]}</p>${i===0?`<span class="code-chip">@ghostmsg_robot <button data-copy>${x.copy}</button></span>`:""}</div></article>`).join("")}</div><section class="section notice"><b>${state.lang==="ru"?"Важно.":"Important."}</b> ${state.lang==="ru"?"Сообщения, отправленные до подключения, Telegram боту не передаёт.":"Telegram does not provide messages sent before connection."}</section><a class="primary" href="tg://settings/edit">⚙ ${x.openSettings} <span>›</span></a>${supportButton()}`}
+function backup(){const x=t();return `${pageHead(x.archiveTitle,x.archiveIntro)}${info("1",state.lang==="ru"?"Сначала подключите Ghost":"Connect Ghost first",state.lang==="ru"?"Архив использует то же разрешение Автоматизации чатов. Без него новые сообщения не поступают боту.":"The archive relies on the same Chat Automation permission. Without it, new messages never reach the bot.")}${info("2",state.lang==="ru"?"Выберите переписку":"Choose a conversation",state.lang==="ru"?"После оплаты тарифа откройте Ghost и выберите чат для резервного хранения.":"After selecting a plan, open Ghost and choose a chat for protected storage.")}${info("3",state.lang==="ru"?"Что сохраняется":"What is saved",state.lang==="ru"?"Новые доступные события после подключения. История до подключения не копируется.":"New permitted events after connection. History before connection is never copied.")}${supportButton()}`}
+function groups(){const x=t();return `${pageHead(x.groupTitle,x.groupIntro)}${info("1",state.lang==="ru"?"Добавьте Ghost администратором":"Add Ghost as an administrator",state.lang==="ru"?"Откройте нужную группу → Управление → Администраторы и добавьте @ghostmsg_robot.":"Open the target group → Manage → Administrators and add @ghostmsg_robot.")}${info("2",state.lang==="ru"?"Проверьте разрешения":"Review permissions",state.lang==="ru"?"Давайте только те права, которые Telegram показывает для выбранного сценария.":"Grant only the permissions Telegram displays for your chosen scenario.")}${info("3",state.lang==="ru"?"Проверьте событием":"Test with a new event",state.lang==="ru"?"Отправьте тестовое сообщение после подключения. Старую историю Telegram не передаёт.":"Send a test message after connection. Telegram doesn't provide old history.")}${supportButton()}`}
+function safety(){const x=t();return `${pageHead(x.safetyTitle,x.safetyIntro)}${info("1",state.lang==="ru"?"Официальная функция Telegram":"An official Telegram feature",state.lang==="ru"?"Ghost использует встроенную Автоматизацию чатов. Не требуется пароль, модифицированный клиент или сторонний доступ к аккаунту.":"Ghost uses built-in Chat Automation. It never asks for a password, modified client or unofficial account access.")}${info("2",state.lang==="ru"?"Только после подключения":"Only after connection",state.lang==="ru"?"Бот обрабатывает только новые события в разрешённых вами чатах.":"The bot processes only new events in chats you explicitly allow.")}${info("3",state.lang==="ru"?"Управление данными":"Data control",state.lang==="ru"?"Отключите автоматизацию в Telegram или отправьте /my_data в боте, чтобы удалить сохранённые данные.":"Disconnect automation in Telegram or send /my_data in the bot to erase saved data.")}${supportButton()}`}
+function help(){const x=t();return `${pageHead(x.helpTitle,x.helpIntro)}${info("1",state.lang==="ru"?"Проверьте подключение":"Check connection",state.lang==="ru"?"В настройках профиля Telegram убедитесь, что @ghostmsg_robot активен в Автоматизации чатов.":"Make sure @ghostmsg_robot is active in Chat Automation in your Telegram profile.")}${info("2",state.lang==="ru"?"Проверьте время":"Check timing",state.lang==="ru"?"Ghost реагирует только на события, которые произошли после подключения.":"Ghost responds only to events that happen after connection.")}${info("3",state.lang==="ru"?"Проверьте чат":"Check the chat",state.lang==="ru"?"Нужный чат должен быть разрешён в настройках автоматизации.":"The target chat must be allowed in automation settings.")}${info("4",state.lang==="ru"?"Напишите в поддержку":"Contact support",state.lang==="ru"?"Опишите проблему и приложите скриншот — команда Ghost ответит в чате поддержки.":"Describe the issue and attach a screenshot — the Ghost team will reply in the support chat.")}${supportButton()}`}
+function info(n,title,text){return `<article class="info-card"><h3><i class="number-pill">${n}</i>${title}</h3><p>${text}</p></article>`}
+function plansPage(){const x=t();return `${pageHead(x.plans,state.lang==="ru"?"Выберите формат доступа. Все платежи проходят через Telegram Stars.":"Choose your access plan. All payments use Telegram Stars.")}<section class="plan-grid">${plans.map(p=>`<article class="card plan ${p.popular?"selected":""}">${p.popular?`<span class="badge">${x.popular}</span>`:""}<h3>${x.planNames[p.id]}</h3><strong>${p.stars} ⭐</strong><small>${x.planTerms[p.id]}</small><button class="secondary" data-pay="${p.id}">${x.pay}</button></article>`).join("")}</section><p class="payment-note">${x.payNote}</p>${supportButton()}`}
+function settings(){const x=t();return `${pageHead(x.settings,state.lang==="ru"?"Внешний вид и доступ к Ghost.":"Appearance and access to Ghost.")}<div class="dashboard-actions"><button class="setting-row" data-support><i class="row-icon">◌</i><span class="row-copy"><strong>${x.support}</strong><small>${state.lang==="ru"?"Написать команде Ghost":"Message the Ghost team"}</small></span><b class="chevron">›</b></button><button class="setting-row" data-toggle-languages><i class="row-icon">◎</i><span class="row-copy"><strong>${x.language}</strong><small>${state.lang==="ru"?x.ru:x.en}</small></span><b class="chevron">›</b></button><button class="setting-row" id="theme-setting"><i class="row-icon">◐</i><span class="row-copy"><strong>${x.theme}</strong><small>${state.theme==="dark"?x.dark:x.light}</small></span><b class="chevron">›</b></button></div><section class="section" id="languages"></section>`}
+function languagePicker(){const x=t();return `<p class="section-label">${x.chooseLang}</p><div class="language-list">${[["ru","🇷🇺",x.ru],["en","🇬🇧",x.en]].map(([code,flag,label])=>`<button class="action-row language ${state.lang===code?"selected":""}" data-lang="${code}"><span>${flag} ${label}</span><b class="check">${state.lang===code?"✓":""}</b></button>`).join("")}</div>`}
+const templates={home,connect,backup,groups,safety,help,plans:plansPage,settings};
+function render(){document.documentElement.lang=state.lang;document.body.classList.toggle("light",state.theme==="light");screen.innerHTML=templates[state.page]?.()||home();document.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>go(b.dataset.go));document.querySelectorAll("[data-support]").forEach(b=>b.onclick=support);document.querySelectorAll("[data-pay]").forEach(b=>b.onclick=()=>pay(b.dataset.pay));document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=async()=>{await navigator.clipboard?.writeText("@ghostmsg_robot");b.textContent=t().copied;setTimeout(()=>b.textContent=t().copy,1400)});document.querySelector("#theme-setting")?.addEventListener("click",toggleTheme);document.querySelector("[data-toggle-languages]")?.addEventListener("click",()=>{document.querySelector("#languages").innerHTML=languagePicker();bindLanguage()});bindLanguage();document.querySelectorAll(".bottom-nav [data-go]").forEach((b,i)=>{b.classList.toggle("active",b.dataset.go===state.page||(state.page==="connect"&&i===0));b.querySelector("span").textContent=t().nav[i]})}
+function bindLanguage(){document.querySelectorAll("[data-lang]").forEach(b=>b.onclick=()=>{state.lang=b.dataset.lang;localStorage.setItem("ghost-lang",state.lang);render()})}function toggleTheme(){state.theme=state.theme==="dark"?"light":"dark";localStorage.setItem("ghost-theme",state.theme);render()}document.querySelector("#theme-toggle").onclick=toggleTheme;document.querySelectorAll(".bottom-nav [data-go]").forEach(b=>b.onclick=()=>go(b.dataset.go));render();

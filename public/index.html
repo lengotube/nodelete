@@ -3,9 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#101829" />
-    <meta name="description" content="NoDelete — уведомления об изменениях и резервные копии переписок Telegram." />
-    <title>NoDelete</title>
+    <meta name="theme-color" content="#161129" />
+    <meta name="description" content="Ghost — контроль изменений и резервные копии переписок Telegram." />
+    <title>Ghost</title>
     <link rel="stylesheet" href="/styles.css" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
@@ -13,21 +13,21 @@
     <main class="app-shell">
       <header class="topbar">
         <button class="brand" data-go="home" aria-label="На главную">
-          <img src="/nodelete-avatar.png" alt="NoDelete" onerror="this.style.display='none'" />
-          <span>@nodelete_robot</span>
+          <img src="/ghost-avatar.png" alt="Ghost" />
+          <span>ghost</span>
         </button>
         <div class="top-actions">
-          <button class="icon-button" id="theme-toggle" aria-label="Сменить тему">☼</button>
-          <button class="icon-button" data-go="settings" aria-label="Настройки">⚙</button>
+          <button class="icon-button" id="theme-toggle" aria-label="Сменить тему">◐</button>
+          <button class="icon-button" data-go="settings" aria-label="Настройки">☷</button>
         </div>
       </header>
       <section id="screen" aria-live="polite"></section>
     </main>
     <nav class="bottom-nav" aria-label="Навигация">
       <button data-go="home">⌂<span>Главная</span></button>
-      <button data-go="backup">▣<span>Архив</span></button>
+      <button data-go="backup">◫<span>Архив</span></button>
       <button data-go="plans">✦<span>Тарифы</span></button>
-      <button data-go="settings">⚙<span>Настройки</span></button>
+      <button data-go="settings">☷<span>Настройки</span></button>
     </nav>
     <script type="module" src="/app.js"></script>
   </body>

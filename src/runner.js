@@ -3,7 +3,7 @@ import { processUpdate } from "../api/telegram.js";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
-const allowed_updates = ["message", "callback_query", "business_connection", "business_message", "edited_business_message", "deleted_business_messages"];
+const allowed_updates = ["message", "callback_query", "pre_checkout_query", "business_connection", "business_message", "edited_business_message", "deleted_business_messages"];
 let offset = 0;
 let stopping = false;
 process.on("SIGINT", () => { stopping = true; });
@@ -19,7 +19,7 @@ async function telegram(method, payload) {
 }
 
 await telegram("deleteWebhook", { drop_pending_updates: false });
-console.log("NoDelete runner started (long polling).");
+console.log("Ghost runner started (long polling).");
 while (!stopping) {
   try {
     const updates = await telegram("getUpdates", { offset, timeout: 45, allowed_updates });
