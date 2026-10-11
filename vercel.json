@@ -2,6 +2,9 @@
   "functions": {
     "api/telegram.js": {
       "maxDuration": 10
+    },
+    "api/app-action.js": {
+      "maxDuration": 10
     }
   },
   "rewrites": [
