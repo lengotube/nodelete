@@ -3,7 +3,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 const API = "https://api.telegram.org";
 const BRAND = process.env.BOT_BRAND || "Ghost";
 const SUPPORT_URL = process.env.SUPPORT_URL || "https://t.me/ghostmsg_support_bot?start=help";
-const GROUP_PLANS = {
+const STARS_PLANS = {
+  lite: { title: "Ghost Lite", stars: 180, description: "Доступ к Ghost на 7 дней." },
+  plus: { title: "Ghost Plus", stars: 360, description: "Доступ к Ghost на 30 дней." },
+  prime: { title: "Ghost Prime", stars: 1700, description: "Доступ к Ghost на 1 год." },
+  ultra: { title: "Ghost Ultra", stars: 4370, description: "Постоянный доступ к Ghost." },
   group5: { title: "Ghost для 5 групп", stars: 499, groups: 5 },
   group10: { title: "Ghost для 10 групп", stars: 749, groups: 10 },
   group20: { title: "Ghost для 20 групп", stars: 1249, groups: 20 },
@@ -66,15 +70,17 @@ export default async function handler(request, response) {
         text: `Поддержка ${BRAND} готова помочь. Откройте чат — команда увидит ваше сообщение.`,
         reply_markup: { inline_keyboard: [[{ text: "💬 Написать в поддержку", url: SUPPORT_URL }]] }
       });
-    } else if (action === "group_invoice") {
-      const plan = GROUP_PLANS[request.body?.plan];
+    } else if (action === "stars_invoice") {
+      const plan = STARS_PLANS[request.body?.plan];
       if (!plan) return responseJson(response, 400, { ok: false, message: "Выбранный пакет не найден." });
+      const description = plan.description || `Доступ к мониторингу до ${plan.groups} групп на 30 дней.`;
+      const label = plan.groups ? `${plan.groups} групп — Ghost` : `${plan.title} — Ghost`;
       const invoiceUrl = await telegram("createInvoiceLink", {
         title: plan.title,
-        description: `Доступ к мониторингу до ${plan.groups} групп на 30 дней.`,
+        description,
         payload: `ghost-plan:${request.body.plan}`,
         currency: "XTR",
-        prices: [{ label: `${plan.groups} групп — Ghost`, amount: plan.stars }]
+        prices: [{ label, amount: plan.stars }]
       });
       return responseJson(response, 200, { ok: true, invoiceUrl });
     } else {
