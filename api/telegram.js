@@ -273,10 +273,20 @@ async function processEditedBusinessMessage(message) {
 async function processDeletedBusinessMessages(deleted) {
   const connection = await get(`connection:${deleted.business_connection_id}`);
   if (!connection?.enabled) return;
+  console.log("Business deletion received", {
+    connectionId: deleted.business_connection_id,
+    chatId: deleted.chat_id,
+    messageIds: deleted.message_ids || []
+  });
   for (const id of deleted.message_ids || []) {
     const key = messageKey(deleted.business_connection_id, deleted.chat_id, id);
     const previous = await get(key);
-    if (!previous) continue;
+    if (!previous) {
+      await notifyOwner(connection.userChatId,
+        `<b>🗑 Сообщение удалено</b>\n\nTelegram сообщил об удалении, но Ghost не получил исходный текст. Это бывает, если сообщение было отправлено до подключения или не входило в разрешённый доступ бота.`
+      );
+      continue;
+    }
     await notifyOwner(connection.userChatId,
       `<b>🗑 Сообщение удалено</b>\n\n` +
       `<b>${escapeHtml(previous.sender)}:</b>\n<blockquote>${escapeHtml(previous.text)}</blockquote>\n` +
