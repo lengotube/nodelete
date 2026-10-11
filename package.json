@@ -1,0 +1,14 @@
+{
+  "name": "nodelete-robot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check api/telegram.js && node --check src/bot-setup.js && node --check src/runner.js",
+    "start": "node --env-file=.env src/runner.js",
+    "dev": "npx vercel dev"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

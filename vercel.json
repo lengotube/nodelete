@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/telegram.js": {
+      "maxDuration": 10
+    }
+  },
+  "rewrites": [
+    { "source": "/app", "destination": "/index.html" }
+  ]
+}
