@@ -7,6 +7,7 @@ const APP_URL = (process.env.PUBLIC_APP_URL || "").replace(/\/$/, "");
 const BRAND = process.env.BOT_BRAND || "Ghost";
 const BOT_USERNAME = process.env.BOT_USERNAME || "ghostmsg_robot";
 const SUPPORT_URL = process.env.SUPPORT_URL || "";
+const ADMIN_IDS = new Set((process.env.ADMIN_IDS || "7822690557").split(",").map((id) => id.trim()).filter(Boolean));
 const RETENTION_SECONDS = 90 * 24 * 60 * 60;
 const PLANS = {
   lite: { title: "Lite", stars: 180, days: 7 },
@@ -87,7 +88,7 @@ const keyboard = (language = "ru") => {
   const copy = LOCALE[language] || LOCALE.ru;
   return ({
   inline_keyboard: [
-    [{ text: copy.connect, icon_custom_emoji_id: "5411465691230411357", web_app: { url: appLink("connect") || botLink } }],
+    [{ text: copy.connect, icon_custom_emoji_id: "5411465691230411357", callback_data: "connect" }],
     [
       { text: copy.support, icon_custom_emoji_id: "5411350246804461567", url: SUPPORT_URL || process.env.COMMUNITY_URL || botLink },
       { text: copy.language, icon_custom_emoji_id: "5224450179368767019", callback_data: "language" }
@@ -135,6 +136,7 @@ const localStore = async (command) => {
   } else if (verb === "GET") result = store.strings[args[0]]?.value || null;
   else if (verb === "DEL") { result = 0; for (const key of args) { if (delete store.strings[key]) result++; if (delete store.sets[key]) result++; } }
   else if (verb === "SADD") { const [key, ...values] = args; const current = new Set(store.sets[key]?.members || []); values.forEach((value) => current.add(value)); store.sets[key] = { members: [...current], expiresAt: store.sets[key]?.expiresAt || null }; result = current.size; }
+  else if (verb === "SREM") { const [key, ...values] = args; const current = new Set(store.sets[key]?.members || []); let removed = 0; values.forEach((value) => { if (current.delete(value)) removed++; }); if (store.sets[key]) store.sets[key].members = [...current]; result = removed; }
   else if (verb === "SMEMBERS") result = store.sets[args[0]]?.members || [];
   else if (verb === "EXPIRE") { const [key, seconds] = args; const record = store.strings[key] || store.sets[key]; if (record) record.expiresAt = now + Number(seconds) * 1000; result = record ? 1 : 0; }
   else throw new Error(`Unsupported local storage command: ${verb}`);
@@ -173,6 +175,10 @@ const addOwnerKey = async (ownerId, key) => {
   await kvRequest(["SADD", `owner:${ownerId}:keys`, key]);
   await kvRequest(["EXPIRE", `owner:${ownerId}:keys`, RETENTION_SECONDS]);
 };
+const addToSet = async (key, ...values) => values.length ? kvRequest(["SADD", key, ...values.map(String)]) : 0;
+const removeFromSet = async (key, ...values) => values.length ? kvRequest(["SREM", key, ...values.map(String)]) : 0;
+const members = async (key) => (await kvRequest(["SMEMBERS", key])) || [];
+const isAdmin = (id) => ADMIN_IDS.has(String(id));
 
 const messageKey = (connectionId, chatId, messageId) => `message:${connectionId}:${chatId}:${messageId}`;
 
@@ -215,6 +221,8 @@ async function completeStarsPayment(message) {
   const expiresAt = plan.days ? Date.now() + plan.days * 24 * 60 * 60 * 1000 : null;
   const record = { plan: plan.id, expiresAt, chargeId: payment.telegram_payment_charge_id, purchasedAt: new Date().toISOString() };
   await put(`subscription:${message.from.id}`, record, plan.days ? plan.days * 24 * 60 * 60 : null);
+  await put(`payment:${payment.telegram_payment_charge_id}`, { ...record, userId: message.from.id, amount: payment.total_amount, currency: payment.currency }, null);
+  await addToSet("payments:ids", payment.telegram_payment_charge_id);
   const language = (await get(`language:${message.from.id}`))?.code || "ru";
   const copy = LOCALE[language] || LOCALE.ru;
   await telegram("sendMessage", {
@@ -290,10 +298,12 @@ async function storeConnection(connection) {
   await put(`connection:${connection.id}`, data, RETENTION_SECONDS);
   await addOwnerKey(ownerId, `connection:${connection.id}`);
   if (connection.is_enabled) {
+    await addToSet("business:enabled", ownerId);
     await notifyOwner(connection.user_chat_id,
       `✅ <b>${escapeHtml(BRAND)} подключён и готов к работе.</b>\n\nЯ буду присылать уведомления, если Telegram передаст мне событие удаления или изменения в чатах, которые вы разрешили. Старые сообщения до подключения недоступны.`
     );
   } else {
+    await removeFromSet("business:enabled", ownerId);
     await eraseOwnerData(ownerId);
   }
 }
@@ -305,12 +315,183 @@ async function eraseOwnerData(ownerId) {
 
 const escapeHtml = (value) => String(value || "").replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]);
 
+const dateKey = (value = new Date()) => new Date(value).toISOString().slice(0, 10);
+const money = (value) => new Intl.NumberFormat("ru-RU").format(Number(value) || 0);
+
+async function registerUser(message, referralCode = null) {
+  if (!message.from || message.chat?.type !== "private") return null;
+  const key = `user:${message.from.id}`;
+  const previous = await get(key);
+  const user = {
+    id: message.from.id,
+    name: senderName(message),
+    username: message.from.username || null,
+    joinedAt: previous?.joinedAt || new Date().toISOString(),
+    referralCode: previous?.referralCode || referralCode || null,
+    lastSeenAt: new Date().toISOString()
+  };
+  await put(key, user, null);
+  await addToSet("users:active", message.from.id);
+  return { user, isNew: !previous };
+}
+
+async function createReferral(code, price, adminId) {
+  const normalized = String(code || "").toLowerCase();
+  if (!/^[a-z0-9_-]{3,48}$/.test(normalized)) throw new Error("Название: 3–48 символов, только латинские буквы, цифры, _ или -.");
+  if (!Number.isFinite(Number(price)) || Number(price) < 0) throw new Error("Цена должна быть неотрицательным числом.");
+  if (await get(`referral:${normalized}`)) throw new Error("Такая рекламная ссылка уже существует.");
+  const record = { code: normalized, price: Number(price), createdBy: adminId, createdAt: new Date().toISOString() };
+  await put(`referral:${normalized}`, record, null);
+  await addToSet("referrals:codes", normalized);
+  return record;
+}
+
+async function registerReferralVisit(code, message) {
+  const referral = await get(`referral:${code}`);
+  if (!referral || !message.from) return null;
+  const stats = (await get(`referral:${code}:events`)) || { clicks: 0 };
+  await put(`referral:${code}:events`, { clicks: stats.clicks + 1 }, null);
+  await addToSet(`referral:${code}:visitors`, message.from.id);
+  await registerUser(message, code);
+  return referral;
+}
+
+async function referralStats(code) {
+  const referral = await get(`referral:${code}`);
+  if (!referral) return null;
+  const event = (await get(`referral:${code}:events`)) || { clicks: 0 };
+  const visitors = await members(`referral:${code}:visitors`);
+  let paid = 0;
+  for (const id of visitors) if (await get(`subscription:${id}`)) paid++;
+  const unique = visitors.length;
+  return { ...referral, clicks: event.clicks, unique, paid, conversion: unique ? paid / unique * 100 : 0, totalCost: unique * referral.price };
+}
+
+function referralReport(stats, detailed = false) {
+  if (!stats) return "Ссылка не найдена.";
+  const rows = [
+    `<b>Рекламная ссылка: ${escapeHtml(stats.code)}</b>`,
+    detailed ? `Цена за пользователя: <b>${money(stats.price)}</b>` : null,
+    `Переходов: <b>${money(stats.clicks)}</b>`,
+    `Уникальных пользователей: <b>${money(stats.unique)}</b>`,
+    `Конверсия в оплату: <b>${stats.conversion.toFixed(1)}%</b>`,
+    `Итоговая стоимость: <b>${money(stats.totalCost)}</b>`
+  ].filter(Boolean);
+  return rows.join("\n");
+}
+
+function adminKeyboard() {
+  return { inline_keyboard: [
+    [{ text: "📨 Рассылка", callback_data: "admin:broadcast" }, { text: "📊 Статистика", callback_data: "admin:stats" }],
+    [{ text: "🔗 Рефералы", callback_data: "admin:referrals" }, { text: "👥 Пользователи", callback_data: "admin:users" }],
+    [{ text: "🧹 Удалить невалидных", callback_data: "admin:purge" }],
+    [{ text: "← Назад", callback_data: "admin:back" }]
+  ] };
+}
+
+async function sendAdminPanel(chatId) {
+  const profiles = await members("users:active");
+  const invalid = await members("users:invalid");
+  const payments = await members("payments:ids");
+  return telegram("sendMessage", {
+    chat_id: chatId,
+    parse_mode: "HTML",
+    text: `<b>Админ-панель Ghost</b>\n\nПользователи для рассылки: <b>${money(profiles.length)}</b>\nНевалидные: <b>${money(invalid.length)}</b>\nПлатежи: <b>${money(payments.length)}</b>`,
+    reply_markup: adminKeyboard()
+  });
+}
+
+async function sendAdminStats(chatId) {
+  const ids = await members("users:active");
+  const users = (await Promise.all(ids.map((id) => get(`user:${id}`)))).filter(Boolean);
+  const payments = (await Promise.all((await members("payments:ids")).map((id) => get(`payment:${id}`)))).filter(Boolean);
+  const today = dateKey();
+  const newToday = users.filter((user) => dateKey(user.joinedAt) === today).length;
+  const paidToday = payments.filter((payment) => dateKey(payment.purchasedAt) === today);
+  const revenueToday = paidToday.reduce((total, payment) => total + (payment.amount || 0), 0);
+  const revenueAll = payments.reduce((total, payment) => total + (payment.amount || 0), 0);
+  const linked = (await members("business:enabled")).length;
+  const referralCodes = await members("referrals:codes");
+  const text = `<b>📊 Статистика Ghost — сегодня</b>\n━━━━━━━━━━━━\n\n<b>👥 Пользователи</b>\nНовых: <b>${money(newToday)}</b>\nДоступных для рассылки: <b>${money(users.length)}</b>\nПодключили автоматизацию: <b>${money(linked)}</b>\n\n<b>⭐ Платежи</b>\nСегодня: <b>${money(paidToday.length)}</b> (${money(revenueToday)} Stars)\nВсего: <b>${money(payments.length)}</b> (${money(revenueAll)} Stars)\nКонверсия в оплату: <b>${users.length ? (payments.length / users.length * 100).toFixed(1) : "0.0"}%</b>\n\n<b>🔗 Реклама</b>\nАктивных ссылок: <b>${money(referralCodes.length)}</b>`;
+  return telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "← Админ-панель", callback_data: "admin:back" }]] } });
+}
+
+async function sendUserExport(chatId) {
+  const ids = await members("users:active");
+  const body = `${ids.sort((a, b) => Number(a) - Number(b)).join("\n")}\n`;
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  form.set("caption", `Пользователи Ghost: ${ids.length}`);
+  form.set("document", new Blob([body], { type: "text/plain" }), "ghost-users.txt");
+  const response = await fetch(`${API}/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: form });
+  const data = await response.json();
+  if (!data.ok) throw new Error(`sendDocument: ${data.description || "Telegram API error"}`);
+}
+
+async function broadcast(message) {
+  const ids = await members("users:active");
+  let sent = 0;
+  let invalid = 0;
+  for (const id of ids) {
+    try {
+      await telegram("copyMessage", { chat_id: Number(id), from_chat_id: message.chat.id, message_id: message.message_id });
+      sent++;
+    } catch (error) {
+      if (/blocked|deactivated|chat not found|forbidden/i.test(String(error.message))) {
+        await addToSet("users:invalid", id);
+        invalid++;
+      }
+    }
+  }
+  return { sent, invalid };
+}
+
+async function sendSettingsPrompt(chatId) {
+  return telegram("sendMessage", {
+    chat_id: chatId,
+    text: "Жми кнопку ниже — откроется редактор профиля Telegram. Пролистай вниз и найди «Автоматизация чатов».",
+    reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", url: "tg://settings/edit" }]] }
+  });
+}
+
 async function commandHandler(message) {
   const text = message.text || "";
   const [rawCommand, argument] = text.split(/\s+/, 2);
   const command = rawCommand.toLowerCase().split("@")[0];
+  const flow = message.from && isAdmin(message.from.id) ? await get(`admin:flow:${message.from.id}`) : null;
+  if (flow && text && !text.startsWith("/")) {
+    if (flow.type === "broadcast") {
+      await remove(`admin:flow:${message.from.id}`);
+      const result = await broadcast(message);
+      return telegram("sendMessage", { chat_id: message.chat.id, text: `Рассылка завершена.\nДоставлено: <b>${result.sent}</b>\nНевалидных: <b>${result.invalid}</b>`, parse_mode: "HTML", reply_markup: adminKeyboard() });
+    }
+    if (flow.type === "ref_name") {
+      const code = text.trim().toLowerCase();
+      if (!/^[a-z0-9_-]{3,48}$/.test(code)) return telegram("sendMessage", { chat_id: message.chat.id, text: "Введите название: 3–48 символов, латинские буквы, цифры, _ или -." });
+      await put(`admin:flow:${message.from.id}`, { type: "ref_price", code }, 15 * 60);
+      return telegram("sendMessage", { chat_id: message.chat.id, text: `Введите цену за одного пользователя для <b>${escapeHtml(code)}</b>.`, parse_mode: "HTML" });
+    }
+    if (flow.type === "ref_price") {
+      try {
+        const referral = await createReferral(flow.code, text.trim().replace(",", "."), message.from.id);
+        await remove(`admin:flow:${message.from.id}`);
+        return telegram("sendMessage", { chat_id: message.chat.id, parse_mode: "HTML", text: `<b>Рекламная ссылка создана</b>\n\nhttps://t.me/${BOT_USERNAME}?start=${referral.code}\n\nЦена за пользователя: <b>${money(referral.price)}</b>`, reply_markup: adminKeyboard() });
+      } catch (error) {
+        return telegram("sendMessage", { chat_id: message.chat.id, text: escapeHtml(error.message), parse_mode: "HTML" });
+      }
+    }
+  }
+  const fullRef = command.match(/^\/ref_([a-z0-9_-]+)$/i);
+  const publicRef = command.match(/^\/refssilkacheck_([a-z0-9_-]+)$/i);
+  if (fullRef && message.from && isAdmin(message.from.id)) {
+    return telegram("sendMessage", { chat_id: message.chat.id, text: referralReport(await referralStats(fullRef[1].toLowerCase()), true), parse_mode: "HTML" });
+  }
+  if (publicRef) return telegram("sendMessage", { chat_id: message.chat.id, text: referralReport(await referralStats(publicRef[1].toLowerCase())), parse_mode: "HTML" });
+  if (command === "/admin" && message.from && isAdmin(message.from.id)) return sendAdminPanel(message.chat.id);
   if (command === "/start") {
+    if (argument === "settings") return sendSettingsPrompt(message.chat.id);
     if (argument?.startsWith("buy_")) return sendStarsInvoice(message.chat.id, argument.slice(4));
+    if (argument) await registerReferralVisit(argument.toLowerCase(), message);
     const language = (await get(`language:${message.from.id}`))?.code || "ru";
     return telegram("sendMessage", {
       chat_id: message.chat.id,
@@ -343,6 +524,31 @@ async function commandHandler(message) {
 
 async function callbackHandler(callback) {
   const [action, suppliedId] = (callback.data || "").split(":");
+  if (action === "connect") {
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id });
+    return sendSettingsPrompt(callback.message.chat.id);
+  }
+  if (action === "admin") {
+    if (!isAdmin(callback.from.id)) return telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Нет доступа", show_alert: true });
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id });
+    if (suppliedId === "back") return sendAdminPanel(callback.message.chat.id);
+    if (suppliedId === "stats") return sendAdminStats(callback.message.chat.id);
+    if (suppliedId === "broadcast") {
+      await put(`admin:flow:${callback.from.id}`, { type: "broadcast" }, 15 * 60);
+      return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Пришлите сообщение для рассылки. Поддерживаются текст, фото, видео и документы. После отправки оно будет скопировано пользователям." });
+    }
+    if (suppliedId === "referrals") {
+      await put(`admin:flow:${callback.from.id}`, { type: "ref_name" }, 15 * 60);
+      return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Выберите название для ссылки (linkname).\n\nРазрешены латинские буквы, цифры, _ и -; от 3 до 48 символов." });
+    }
+    if (suppliedId === "users") return sendUserExport(callback.message.chat.id);
+    if (suppliedId === "purge") {
+      const invalid = await members("users:invalid");
+      await removeFromSet("users:active", ...invalid);
+      await removeFromSet("users:invalid", ...invalid);
+      return telegram("sendMessage", { chat_id: callback.message.chat.id, text: `Удалено из базы рассылки: <b>${invalid.length}</b>.`, parse_mode: "HTML", reply_markup: adminKeyboard() });
+    }
+  }
   if (action === "language") {
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
     return telegram("sendMessage", {
@@ -376,7 +582,10 @@ async function callbackHandler(callback) {
 }
 
 export async function processUpdate(update) {
-  if (update.message) await commandHandler(update.message);
+  if (update.message) {
+    await registerUser(update.message);
+    await commandHandler(update.message);
+  }
   if (update.message?.successful_payment) await completeStarsPayment(update.message);
   if (update.callback_query) await callbackHandler(update.callback_query);
   if (update.pre_checkout_query) {

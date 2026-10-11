@@ -36,6 +36,7 @@ SUPPORT_URL=https://t.me/ghostmsg_support_bot
 SUPPORT_BOT_TOKEN=...
 # Необязательно: numeric ID оператора или приватной группы поддержки
 SUPPORT_ADMIN_CHAT_ID=...
+ADMIN_IDS=7822690557
 ```
 
 Команда запуска: `npm start`. Для постоянной работы используется процесс PM2 с именем `nodelete_robot`.
@@ -51,3 +52,9 @@ SUPPORT_ADMIN_CHAT_ID=...
 - Для Stars не нужен внешний платёжный провайдер: кнопки Mini App открывают `@ghostmsg_robot?start=buy_<тариф>`, а бот формирует инвойс в `XTR`.
 - Не выдавайте доступ до события `successful_payment`; это уже реализовано в `api/telegram.js`.
 - Чтобы обращения из `@ghostmsg_support_bot` автоматически приходили оператору, задайте `SUPPORT_ADMIN_CHAT_ID` и перезапустите процесс `ghost_support` в PM2. Пока ID не задан, бот подтверждает получение обращения, но не пересылает его команде.
+
+## Админ-панель
+
+`/admin` доступна только ID из `ADMIN_IDS`. В ней есть рассылка, актуальная статистика Stars/пользователей, выгрузка ID в `ghost-users.txt` и очистка базы рассылки от заблокировавших бота.
+
+В разделе «Рефералы» создаётся ссылка `https://t.me/ghostmsg_robot?start=linkname`: после названия укажите цену за пользователя. Полная статистика доступна администратору по `/ref_linkname`; публичная — по `/refssilkacheck_linkname`.
