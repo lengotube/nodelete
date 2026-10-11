@@ -235,12 +235,15 @@ async function completeStarsPayment(message) {
 }
 
 async function saveBusinessMessage(message) {
-  if (!message.business_connection_id) return;
+  if (!message.business_connection_id || !message.chat?.id || !message.message_id) return;
   const connection = await get(`connection:${message.business_connection_id}`);
-  if (!connection?.enabled) return;
+  // A business message can arrive just before the connection update reaches us
+  // (for example after a process restart). Keep that snapshot too: the matching
+  // deletion update contains the connection id and can retrieve it safely.
+  if (connection && !connection.enabled) return;
   const key = messageKey(message.business_connection_id, message.chat.id, message.message_id);
   const snapshot = {
-    ownerId: connection.ownerId,
+    ownerId: connection?.ownerId || null,
     connectionId: message.business_connection_id,
     chatId: message.chat.id,
     messageId: message.message_id,
@@ -251,7 +254,12 @@ async function saveBusinessMessage(message) {
     savedAt: new Date().toISOString()
   };
   await put(key, snapshot);
-  await addOwnerKey(connection.ownerId, key);
+  if (connection?.ownerId) await addOwnerKey(connection.ownerId, key);
+  console.log("Business message snapshot saved", {
+    connectionId: message.business_connection_id,
+    chatId: message.chat.id,
+    messageId: message.message_id
+  });
 }
 
 async function processEditedBusinessMessage(message) {
@@ -273,13 +281,19 @@ async function processEditedBusinessMessage(message) {
 async function processDeletedBusinessMessages(deleted) {
   const connection = await get(`connection:${deleted.business_connection_id}`);
   if (!connection?.enabled) return;
+  // Bot API uses `chat` here. Keep `chat_id` as a compatibility fallback.
+  const chatId = deleted.chat?.id ?? deleted.chat_id;
   console.log("Business deletion received", {
     connectionId: deleted.business_connection_id,
-    chatId: deleted.chat_id,
+    chatId,
     messageIds: deleted.message_ids || []
   });
+  if (!chatId) {
+    console.error("Business deletion has no chat id", { connectionId: deleted.business_connection_id });
+    return;
+  }
   for (const id of deleted.message_ids || []) {
-    const key = messageKey(deleted.business_connection_id, deleted.chat_id, id);
+    const key = messageKey(deleted.business_connection_id, chatId, id);
     const previous = await get(key);
     if (!previous) {
       await notifyOwner(connection.userChatId,
