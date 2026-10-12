@@ -58,3 +58,17 @@ ADMIN_IDS=7822690557
 `/admin` доступна только ID из `ADMIN_IDS`. В ней есть рассылка, актуальная статистика Stars/пользователей, выгрузка ID в `ghost-users.txt` и очистка базы рассылки от заблокировавших бота.
 
 В разделе «Рефералы» создаётся ссылка `https://t.me/ghostmsg_robot?start=linkname`: после названия укажите цену за пользователя. Полная статистика доступна администратору по `/ref_linkname`; публичная — по `/refssilkacheck_linkname`.
+
+## Экран статистики в Mini App
+
+Главная Mini App показывает статус подключения, счётчики удалений и правок за сегодня и ленту последних событий. Данные отдаёт сам бот на VPS: процесс `src/runner.js` поднимает API на `127.0.0.1:8787` (`src/dashboard-api.js`), каждый запрос проверяется по подписи Telegram `initData`, поэтому пользователь видит только свои события. Vercel проксирует `/api/dashboard` на HTTPS-адрес сервера (см. `vercel.json`).
+
+Настройка сервера одной командой (от root):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lengotube/nodelete/main/deploy/setup-dashboard-api.sh | bash
+```
+
+Скрипт обновит код бота, поставит Caddy с автоматическим HTTPS-сертификатом для `<ip>.sslip.io`, перезапустит PM2-процесс и проверит API. Если у вас есть свой домен, передайте его: `DOMAIN=api.example.com bash setup-dashboard-api.sh` — и поменяйте адрес в `vercel.json`.
+
+Для предпросмотра без сервера откройте `/app?demo=1`.

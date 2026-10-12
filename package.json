@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check api/telegram.js && node --check api/app-action.js && node --check src/bot-setup.js && node --check src/runner.js && node --check src/support-runner.js && node --check src/configure-brand.js",
+    "check": "node --check api/telegram.js && node --check api/app-action.js && node --check src/bot-setup.js && node --check src/runner.js && node --check src/support-runner.js && node --check src/configure-brand.js && node --check src/dashboard-api.js",
     "start": "node --env-file=.env src/runner.js",
     "start:support": "node --env-file=.env src/support-runner.js",
     "configure:brand": "node --env-file=.env src/configure-brand.js",

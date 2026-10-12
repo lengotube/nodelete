@@ -196,6 +196,18 @@ const messagePreview = (message) => {
   return "Сообщение без текстового содержимого";
 };
 
+const chatTitle = (chat) => chat?.title || [chat?.first_name, chat?.last_name].filter(Boolean).join(" ") || null;
+const EVENT_LIMIT = 200;
+const clip = (value, size = 500) => { const text = String(value ?? ""); return text.length > size ? `${text.slice(0, size)}…` : text; };
+async function recordEvent(ownerId, event) {
+  if (!ownerId) return;
+  const key = `events:${ownerId}`;
+  const list = (await get(key)) || [];
+  list.unshift({ ...event, at: Date.now() });
+  await put(key, list.slice(0, EVENT_LIMIT));
+  await addOwnerKey(ownerId, key);
+}
+
 const senderName = (message) => [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") || "Собеседник";
 const notifyOwner = (chatId, text) => telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML" });
 
@@ -259,12 +271,18 @@ async function saveBusinessMessage(message) {
     senderId: message.from?.id || null,
     sender: senderName(message),
     username: message.from?.username || null,
+    chatTitle: chatTitle(message.chat),
     text: messagePreview(message),
     timestamp: message.date,
     savedAt: new Date().toISOString()
   };
   await put(key, snapshot);
-  if (connection?.ownerId) await addOwnerKey(connection.ownerId, key);
+  if (connection?.ownerId) {
+    await addOwnerKey(connection.ownerId, key);
+    const chatsKey = `owner:${connection.ownerId}:chats`;
+    await addToSet(chatsKey, message.chat.id);
+    await addOwnerKey(connection.ownerId, chatsKey);
+  }
   console.log("Business message snapshot saved", {
     connectionId: message.business_connection_id,
     chatId: message.chat.id,
@@ -286,6 +304,14 @@ async function processEditedBusinessMessage(message) {
     `<b>Новое:</b>\n<blockquote>${newText}</blockquote>\n` +
     `<b>Было:</b>\n<blockquote><s>${oldText}</s></blockquote>`
   );
+  await recordEvent(connection.ownerId, {
+    type: "edited",
+    chatId: message.chat.id,
+    chatTitle: chatTitle(message.chat),
+    sender: senderName(message),
+    text: clip(messagePreview(message)),
+    previous: clip(previous.text)
+  });
 }
 
 async function processDeletedBusinessMessages(deleted) {
@@ -310,6 +336,7 @@ async function processDeletedBusinessMessages(deleted) {
       await notifyOwner(connection.userChatId,
         `<b>🗑 Сообщение удалено</b>\n\nTelegram сообщил об удалении, но Ghost не получил исходный текст. Это бывает, если сообщение было отправлено до подключения или не входило в разрешённый доступ бота.`
       );
+      await recordEvent(connection.ownerId, { type: "deleted", chatId, chatTitle: chatTitle(deleted.chat), sender: null, text: null, unknown: true });
       continue;
     }
     await notifyOwner(connection.userChatId,
@@ -317,6 +344,13 @@ async function processDeletedBusinessMessages(deleted) {
       `<b>${escapeHtml(previous.sender)}:</b>\n<blockquote>${escapeHtml(previous.text)}</blockquote>\n` +
       `<i>Сохранено после подключения ${escapeHtml(BRAND)}.</i>`
     );
+    await recordEvent(connection.ownerId, {
+      type: "deleted",
+      chatId,
+      chatTitle: previous.chatTitle || chatTitle(deleted.chat),
+      sender: previous.sender,
+      text: clip(previous.text)
+    });
   }
 }
 
@@ -781,6 +815,24 @@ async function callbackHandler(callback) {
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
     return sendStarsInvoice(callback.message.chat.id, suppliedId);
   }
+}
+
+/**
+ * Summary for the Mini App home screen. `tzOffset` is the viewer's
+ * Date#getTimezoneOffset() so "today" matches their local day.
+ */
+export async function getDashboard(ownerId, { tzOffset = 0, limit = 20 } = {}) {
+  const enabled = await members("business:enabled");
+  const connected = enabled.map(String).includes(String(ownerId));
+  if (!connected) return { connected: false };
+  const events = (await get(`events:${ownerId}`)) || [];
+  const chats = (await members(`owner:${ownerId}:chats`)).length;
+  const offsetMs = (Number(tzOffset) || 0) * 60 * 1000;
+  const localNow = new Date(Date.now() - offsetMs);
+  const startOfDay = Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate()) + offsetMs;
+  const today = { deleted: 0, edited: 0 };
+  for (const event of events) if (event.at >= startOfDay && today[event.type] !== undefined) today[event.type]++;
+  return { connected: true, chats, today, events: events.slice(0, limit) };
 }
 
 export async function processUpdate(update) {
