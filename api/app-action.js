@@ -14,6 +14,23 @@ const STARS_PLANS = {
   group50: { title: "Ghost для 50 групп", stars: 3999, groups: 50 }
 };
 
+const settingsText = (username) => `
+<tg-emoji emoji-id="5411127204857812990">⚙️</tg-emoji> <b>Подключение за 30 секунд:</b>
+
+<tg-emoji emoji-id="5794182096603847292">1️⃣</tg-emoji> Нажми и скопируй <b>username</b>
+<code>@${username}</code> <tg-emoji emoji-id="5413573223092624530">↩️</tg-emoji> тык
+
+<tg-emoji emoji-id="5794303034292968945">2⃣</tg-emoji> Открой <a href="tg://settings/edit">настройки</a>
+<a href="tg://settings/edit">Telegram-профиля</a>
+
+<tg-emoji emoji-id="5794031944547178894">3⃣</tg-emoji> Найди пункт настроек
+<tg-emoji emoji-id="5469753237865275412">✨</tg-emoji> <b>Автоматизация чатов</b>
+
+<tg-emoji emoji-id="5793901252987330401">4⃣</tg-emoji> Вставь username <b>${BRAND}</b>
+<code>@${username}</code>
+и нажми <b>Добавить</b>
+`.trim();
+
 function verifiedUser(initData) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error("Telegram token is not configured for Mini App actions.");
@@ -60,8 +77,9 @@ export default async function handler(request, response) {
     if (action === "settings") {
       await telegram("sendMessage", {
         chat_id: user.id,
-        text: `Откройте <a href="tg://settings/edit">настройки профиля Telegram</a>, найдите «Автоматизация чатов» и добавьте <code>@${process.env.BOT_USERNAME || "ghostmsg_robot"}</code>.`,
+        text: settingsText(process.env.BOT_USERNAME || "ghostmsg_robot"),
         parse_mode: "HTML",
+        disable_web_page_preview: true,
         reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", url: "tg://settings/edit" }]] }
       });
     } else if (action === "support") {
