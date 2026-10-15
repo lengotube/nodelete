@@ -343,9 +343,8 @@ async function deliverLockedEvents(ownerId, chatId) {
   const events = (await get(key)) || [];
   if (!events.length) return;
   const rows = events.slice(0, 10).map((event) => {
-    const title = event.type === "edited" ? "✏️ Изменённое сообщение" : "🗑 Удалённое сообщение";
-    const old = event.previous ? `\n<b>Было:</b> <blockquote><s>${escapeHtml(event.previous)}</s></blockquote>` : "";
-    return `<b>${title}</b>\n<b>${escapeHtml(event.sender || "Собеседник")}:</b> <blockquote>${escapeHtml(event.text)}</blockquote>${old}`;
+    if (event.type === "edited") return editedMessageNotice(event);
+    return deletedMessageNotice(event);
   });
   await notifyOwner(chatId, `<b>События, сохранённые после триала</b>\n\n${rows.join("\n\n")}`.slice(0, 4000));
   await remove(key);
@@ -510,8 +509,11 @@ async function processEditedBusinessMessage(message) {
     chatId: message.chat.id,
     chatTitle: chatTitle(message.chat),
     sender: senderName(message),
+    username: message.from?.username || previous.username || null,
+    senderId: message.from?.id || previous.senderId || null,
     text: clip(messagePreview(message)),
-    previous: clip(previous.text)
+    previous: clip(previous.text),
+    occurredAt: Date.now()
   };
   await recordEvent(connection.ownerId, event);
   const access = await getAccessState(connection.ownerId);
@@ -519,13 +521,7 @@ async function processEditedBusinessMessage(message) {
     await recordLockedEvent(connection.ownerId, event);
     return sendLockedEventNotice(connection, "edited");
   }
-  const oldText = escapeHtml(previous.text);
-  const newText = escapeHtml(messagePreview(message));
-  await notifyOwner(connection.userChatId,
-    `<b>✏️ ${escapeHtml(senderName(message))} изменил(а) сообщение</b>\n\n` +
-    `<b>Новое:</b>\n<blockquote>${newText}</blockquote>\n` +
-    `<b>Было:</b>\n<blockquote><s>${oldText}</s></blockquote>`
-  );
+  await notifyOwner(connection.userChatId, editedMessageNotice(event));
 }
 
 async function processDeletedBusinessMessages(deleted) {
@@ -560,7 +556,10 @@ async function processDeletedBusinessMessages(deleted) {
       chatId,
       chatTitle: previous.chatTitle || chatTitle(deleted.chat),
       sender: previous.sender,
-      text: clip(previous.text)
+      username: previous.username || null,
+      senderId: previous.senderId || null,
+      text: clip(previous.text),
+      occurredAt: Date.now()
     };
     await recordEvent(connection.ownerId, event);
     if ((await getAccessState(connection.ownerId)).kind === "locked") {
@@ -568,11 +567,7 @@ async function processDeletedBusinessMessages(deleted) {
       await sendLockedEventNotice(connection, "deleted");
       continue;
     }
-    await notifyOwner(connection.userChatId,
-      `<b>🗑 Сообщение удалено</b>\n\n` +
-      `<b>${escapeHtml(previous.sender)}:</b>\n<blockquote>${escapeHtml(previous.text)}</blockquote>\n` +
-      `<i>Сохранено после подключения ${escapeHtml(BRAND)}.</i>`
-    );
+    await notifyOwner(connection.userChatId, deletedMessageNotice(event));
   }
 }
 
@@ -613,6 +608,30 @@ async function eraseOwnerData(ownerId) {
 }
 
 const escapeHtml = (value) => String(value || "").replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]);
+
+const notificationTime = (value = Date.now()) => {
+  const timestamp = Number(value);
+  const date = new Date(timestamp > 0 && timestamp < 20_000_000_000 ? timestamp * 1000 : timestamp || Date.now());
+  return new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+};
+
+const senderMention = ({ sender, username, senderId } = {}) => {
+  const name = escapeHtml(sender || "Собеседник");
+  const handle = String(username || "").replace(/^@/, "").trim();
+  const href = handle
+    ? `https://t.me/${encodeURIComponent(handle)}`
+    : senderId ? `tg://user?id=${encodeURIComponent(String(senderId))}` : null;
+  return href ? `<a href="${href}"><b>${name}</b></a>` : `<b>${name}</b>`;
+};
+
+const deletedMessageNotice = (event) =>
+  `<tg-emoji emoji-id="5411218378423575851">🗑</tg-emoji> ${senderMention(event)} удалил(а) сообщение · <i>${notificationTime(event.occurredAt)}</i>\n\n` +
+  `<blockquote>${escapeHtml(event.text)}</blockquote>`;
+
+const editedMessageNotice = (event) =>
+  `<tg-emoji emoji-id="5413857558517553804">💬</tg-emoji> ${senderMention(event)} изменил(а) сообщение · <i>${notificationTime(event.occurredAt)}</i>\n\n` +
+  `<b>Новое:</b>\n<blockquote>${escapeHtml(event.text)}</blockquote>\n\n` +
+  `<b>Было:</b>\n<blockquote><s>${escapeHtml(event.previous)}</s></blockquote>`;
 
 const dateKey = (value = new Date()) => new Date(value).toISOString().slice(0, 10);
 const money = (value) => new Intl.NumberFormat("ru-RU").format(Number(value) || 0);
