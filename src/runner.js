@@ -1,5 +1,5 @@
 /** VPS runner: receives Telegram updates by long polling; no public webhook is needed. */
-import { processUpdate } from "../api/telegram.js";
+import { processUpdate, runFunnelAutomation } from "../api/telegram.js";
 import { startDashboardApi } from "./dashboard-api.js";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -8,7 +8,8 @@ const allowed_updates = ["message", "callback_query", "pre_checkout_query", "bus
 let offset = 0;
 let stopping = false;
 let dashboard = null;
-const stop = () => { stopping = true; dashboard?.close(); };
+let funnelTimer = null;
+const stop = () => { stopping = true; dashboard?.close(); if (funnelTimer) clearInterval(funnelTimer); };
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
@@ -22,6 +23,9 @@ async function telegram(method, payload) {
 }
 
 if (process.env.DASHBOARD_PORT !== "0") dashboard = startDashboardApi();
+const runFunnel = () => runFunnelAutomation().catch((error) => console.error("Funnel automation failed", error));
+runFunnel();
+funnelTimer = setInterval(runFunnel, 15 * 1000);
 
 await telegram("deleteWebhook", { drop_pending_updates: false });
 console.log("Ghost runner started (long polling).");

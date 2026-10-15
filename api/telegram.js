@@ -9,6 +9,11 @@ const BOT_USERNAME = process.env.BOT_USERNAME || "ghostmsg_robot";
 const SUPPORT_URL = process.env.SUPPORT_URL || "";
 const ADMIN_IDS = new Set((process.env.ADMIN_IDS || "7822690557").split(",").map((id) => id.trim()).filter(Boolean));
 const RETENTION_SECONDS = 90 * 24 * 60 * 60;
+const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000;
+const FIRST_NUDGE_DELAY_MS = 15 * 1000;
+const SAFETY_NUDGE_DELAY_MS = 24 * 60 * 60 * 1000;
+const PAYWALL_NUDGE_DELAY_MS = 6 * 60 * 60 * 1000;
+const TRIAL_FORECAST_DAYS = 30;
 const PLANS = {
   lite: { title: "Lite", stars: 180, days: 7, scope: "personal" },
   plus: { title: "Plus", stars: 360, days: 30, scope: "personal" },
@@ -211,6 +216,200 @@ async function recordEvent(ownerId, event) {
 const senderName = (message) => [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") || "Собеседник";
 const notifyOwner = (chatId, text) => telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML" });
 
+const trialKey = (ownerId) => `trial:${ownerId}`;
+const lockedEventsKey = (ownerId) => `locked-events:${ownerId}`;
+const funnelKey = (ownerId) => `funnel:${ownerId}`;
+const funnelPendingKey = "funnel:pending";
+const trialActiveKey = "trials:active";
+const planKeyboard = () => ({ inline_keyboard: [[{ text: "⭐ Выбрать тариф", web_app: { url: appLink("plans") || botLink } }]] });
+
+async function personalSubscription(ownerId) {
+  return get(`subscription:${ownerId}`);
+}
+
+async function getAccessState(ownerId) {
+  if (await personalSubscription(ownerId)) return { kind: "paid" };
+  const trial = await get(trialKey(ownerId));
+  if (trial?.status === "active" && trial.endsAt > Date.now()) return { kind: "trial", trial };
+  return { kind: "locked", trial };
+}
+
+async function rememberOwnerData(ownerId, key) {
+  await addOwnerKey(ownerId, key);
+  return key;
+}
+
+async function updateFunnel(ownerId, stage, extra = {}) {
+  const key = funnelKey(ownerId);
+  const previous = (await get(key)) || { startedAt: Date.now(), events: [] };
+  const events = Array.isArray(previous.events) ? previous.events : [];
+  const last = events.at(-1);
+  if (!last || last.stage !== stage || Date.now() - last.at > 30 * 1000) {
+    events.push({ stage, at: Date.now() });
+  }
+  const next = { ...previous, ...extra, events: events.slice(-40) };
+  await put(key, next, null);
+  await rememberOwnerData(ownerId, key);
+  return next;
+}
+
+async function beginFunnel(ownerId) {
+  const current = await get(funnelKey(ownerId));
+  if (current?.startedAt) return current;
+  const funnel = await updateFunnel(ownerId, "started", { startedAt: Date.now(), reminders: {} });
+  await addToSet(funnelPendingKey, ownerId);
+  return funnel;
+}
+
+export async function trackFunnelEvent(ownerId, stage) {
+  const allowed = new Set(["mini_app_opened", "view_connect", "username_copied", "settings_requested", "view_plans", "invoice_opened"]);
+  if (!ownerId || !allowed.has(stage)) return;
+  await beginFunnel(ownerId);
+  await updateFunnel(ownerId, stage);
+}
+
+async function startTrial(connection) {
+  const ownerId = connection.ownerId;
+  if (!ownerId || await personalSubscription(ownerId)) return null;
+  const key = trialKey(ownerId);
+  const existing = await get(key);
+  if (existing) return null;
+  const startedAt = Date.now();
+  const trial = {
+    status: "active",
+    startedAt,
+    endsAt: startedAt + TRIAL_DURATION_MS,
+    connectionId: connection.id,
+    userChatId: connection.userChatId
+  };
+  await put(key, trial, null);
+  await rememberOwnerData(ownerId, key);
+  await addToSet(trialActiveKey, ownerId);
+  await updateFunnel(ownerId, "trial_started", { connectedAt: startedAt });
+  await removeFromSet(funnelPendingKey, ownerId);
+  return trial;
+}
+
+async function finishTrial(ownerId, trial) {
+  if (!trial || trial.status !== "active") return;
+  if (await personalSubscription(ownerId)) {
+    await put(trialKey(ownerId), { ...trial, status: "converted", convertedAt: Date.now() }, null);
+    await removeFromSet(trialActiveKey, ownerId);
+    return;
+  }
+  const events = (await get(`events:${ownerId}`)) || [];
+  const caught = events.filter((event) => event.at >= trial.startedAt && event.at < trial.endsAt).length;
+  const forecast = caught * (TRIAL_FORECAST_DAYS / 3);
+  const ended = { ...trial, status: "ended", endedAt: Date.now(), caught };
+  await put(trialKey(ownerId), ended, null);
+  await removeFromSet(trialActiveKey, ownerId);
+  await updateFunnel(ownerId, "trial_ended", { trialEndedAt: ended.endedAt, trialEvents: caught });
+  const summary = caught
+    ? `За время пробного периода Ghost зафиксировал <b>${caught}</b> ${caught === 1 ? "событие" : caught < 5 ? "события" : "событий"}. Это примерно <b>${forecast}</b> ${forecast === 1 ? "сообщение" : forecast < 5 ? "сообщения" : "сообщений"} за 30 дней при такой же активности.`
+    : "За время пробного периода Ghost не получил доступных событий. Он продолжит сообщать о новых событиях без показа содержимого, пока не будет выбран тариф.";
+  await telegram("sendMessage", {
+    chat_id: trial.userChatId || ownerId,
+    text: `<b>Пробный период завершён</b>\n\n${summary}\n\nGhost продолжит фиксировать новые доступные события. Выберите тариф, чтобы видеть их содержимое.`,
+    parse_mode: "HTML",
+    reply_markup: planKeyboard()
+  });
+}
+
+async function recordLockedEvent(ownerId, event) {
+  const key = lockedEventsKey(ownerId);
+  const list = (await get(key)) || [];
+  list.unshift(event);
+  await put(key, list.slice(0, 25), null);
+  await rememberOwnerData(ownerId, key);
+}
+
+async function sendLockedEventNotice(connection, type) {
+  const key = `paywall:last:${connection.ownerId}`;
+  const last = await get(key);
+  if (last?.at && Date.now() - last.at < PAYWALL_NUDGE_DELAY_MS) return;
+  const label = type === "edited" ? "изменение сообщения" : "удаление сообщения";
+  await telegram("sendMessage", {
+    chat_id: connection.userChatId,
+    text: `<b>🔒 Ghost зафиксировал ${label}</b>\n\nПробный период завершён. Содержимое сохранено и откроется после выбора тарифа.`,
+    parse_mode: "HTML",
+    reply_markup: planKeyboard()
+  });
+  await put(key, { at: Date.now() }, 7 * 24 * 60 * 60);
+  await rememberOwnerData(connection.ownerId, key);
+}
+
+async function deliverLockedEvents(ownerId, chatId) {
+  const key = lockedEventsKey(ownerId);
+  const events = (await get(key)) || [];
+  if (!events.length) return;
+  const rows = events.slice(0, 10).map((event) => {
+    const title = event.type === "edited" ? "✏️ Изменённое сообщение" : "🗑 Удалённое сообщение";
+    const old = event.previous ? `\n<b>Было:</b> <blockquote><s>${escapeHtml(event.previous)}</s></blockquote>` : "";
+    return `<b>${title}</b>\n<b>${escapeHtml(event.sender || "Собеседник")}:</b> <blockquote>${escapeHtml(event.text)}</blockquote>${old}`;
+  });
+  await notifyOwner(chatId, `<b>События, сохранённые после триала</b>\n\n${rows.join("\n\n")}`.slice(0, 4000));
+  await remove(key);
+}
+
+async function activateTrialsForConnectedUsers() {
+  for (const rawId of await members("business:enabled")) {
+    const ownerId = String(rawId);
+    if (await personalSubscription(ownerId) || await get(trialKey(ownerId))) continue;
+    const keys = await members(`owner:${ownerId}:keys`);
+    const connectionKey = keys.find((key) => key.startsWith("connection:"));
+    const connection = connectionKey ? await get(connectionKey) : null;
+    if (!connection?.enabled) continue;
+    const trial = await startTrial(connection);
+    if (!trial) continue;
+    await telegram("sendMessage", {
+      chat_id: trial.userChatId || ownerId,
+      parse_mode: "HTML",
+      text: `🎁 <b>Для вас активирован бесплатный пробный период на 3 дня.</b>\n\nДо ${new Date(trial.endsAt).toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" })} Ghost будет показывать содержимое новых доступных событий.`
+    });
+  }
+}
+
+export async function runFunnelAutomation() {
+  const now = Date.now();
+  await activateTrialsForConnectedUsers();
+  for (const rawId of await members(funnelPendingKey)) {
+    const ownerId = String(rawId);
+    const funnel = await get(funnelKey(ownerId));
+    if (!funnel?.startedAt || funnel.connectedAt || await personalSubscription(ownerId)) {
+      await removeFromSet(funnelPendingKey, ownerId);
+      continue;
+    }
+    const reminders = funnel.reminders || {};
+    if (!reminders.first && now - funnel.startedAt >= FIRST_NUDGE_DELAY_MS) {
+      await telegram("sendMessage", {
+        chat_id: ownerId,
+        text: "Нужна помощь с подключением? Нажмите кнопку — Ghost пришлёт прямую ссылку на настройки Telegram.",
+        reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", callback_data: "connect" }]] }
+      });
+      await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, first: now } }, null);
+      continue;
+    }
+    if (!reminders.safety && now - funnel.startedAt >= SAFETY_NUDGE_DELAY_MS) {
+      await telegram("sendMessage", {
+        chat_id: ownerId,
+        text: "Ghost подключается только через встроенную «Автоматизацию чатов». Пароль и код входа не нужны; доступ можно отключить в любой момент.",
+        reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", callback_data: "connect" }]] }
+      });
+      await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, safety: now } }, null);
+      await removeFromSet(funnelPendingKey, ownerId);
+    }
+  }
+  for (const rawId of await members(trialActiveKey)) {
+    const ownerId = String(rawId);
+    const trial = await get(trialKey(ownerId));
+    if (!trial || trial.status !== "active") {
+      await removeFromSet(trialActiveKey, ownerId);
+      continue;
+    }
+    if (now >= trial.endsAt) await finishTrial(ownerId, trial);
+  }
+}
+
 const planFromPayload = (payload) => {
   const [, planId] = String(payload || "").split(":");
   return PLANS[planId] ? { id: planId, ...PLANS[planId] } : null;
@@ -243,6 +442,14 @@ async function completeStarsPayment(message) {
   const language = (await get(`language:${message.from.id}`))?.code || "ru";
   const copy = LOCALE[language] || LOCALE.ru;
   const isGroupPlan = plan.scope === "groups";
+  if (!isGroupPlan) {
+    const trial = await get(trialKey(message.from.id));
+    if (trial?.status === "active") {
+      await put(trialKey(message.from.id), { ...trial, status: "converted", convertedAt: Date.now() }, null);
+      await removeFromSet(trialActiveKey, message.from.id);
+    }
+    await updateFunnel(message.from.id, "payment_completed", { paidAt: Date.now(), plan: plan.id });
+  }
   await telegram("sendMessage", {
     chat_id: message.chat.id,
     text: isGroupPlan
@@ -253,6 +460,7 @@ async function completeStarsPayment(message) {
     parse_mode: "HTML",
     reply_markup: isGroupPlan ? { inline_keyboard: [[{ text: "Открыть инструкцию для групп", web_app: { url: appLink("groups-guide") || botLink } }]] } : undefined
   });
+  if (!isGroupPlan) await deliverLockedEvents(message.from.id, message.chat.id);
 }
 
 async function saveBusinessMessage(message) {
@@ -297,6 +505,20 @@ async function processEditedBusinessMessage(message) {
   const connection = await get(`connection:${message.business_connection_id}`);
   if (!connection?.enabled) return;
   if (!previous || String(message.from?.id) === String(connection.ownerId) || String(previous.senderId) === String(connection.ownerId)) return;
+  const event = {
+    type: "edited",
+    chatId: message.chat.id,
+    chatTitle: chatTitle(message.chat),
+    sender: senderName(message),
+    text: clip(messagePreview(message)),
+    previous: clip(previous.text)
+  };
+  await recordEvent(connection.ownerId, event);
+  const access = await getAccessState(connection.ownerId);
+  if (access.kind === "locked") {
+    await recordLockedEvent(connection.ownerId, event);
+    return sendLockedEventNotice(connection, "edited");
+  }
   const oldText = escapeHtml(previous.text);
   const newText = escapeHtml(messagePreview(message));
   await notifyOwner(connection.userChatId,
@@ -304,14 +526,6 @@ async function processEditedBusinessMessage(message) {
     `<b>Новое:</b>\n<blockquote>${newText}</blockquote>\n` +
     `<b>Было:</b>\n<blockquote><s>${oldText}</s></blockquote>`
   );
-  await recordEvent(connection.ownerId, {
-    type: "edited",
-    chatId: message.chat.id,
-    chatTitle: chatTitle(message.chat),
-    sender: senderName(message),
-    text: clip(messagePreview(message)),
-    previous: clip(previous.text)
-  });
 }
 
 async function processDeletedBusinessMessages(deleted) {
@@ -333,10 +547,25 @@ async function processDeletedBusinessMessages(deleted) {
     const previous = await get(key);
     if (previous && String(previous.senderId) === String(connection.ownerId)) continue;
     if (!previous) {
-      await notifyOwner(connection.userChatId,
-        `<b>🗑 Сообщение удалено</b>\n\nTelegram сообщил об удалении, но Ghost не получил исходный текст. Это бывает, если сообщение было отправлено до подключения или не входило в разрешённый доступ бота.`
-      );
       await recordEvent(connection.ownerId, { type: "deleted", chatId, chatTitle: chatTitle(deleted.chat), sender: null, text: null, unknown: true });
+      if ((await getAccessState(connection.ownerId)).kind !== "locked") {
+        await notifyOwner(connection.userChatId,
+          `<b>🗑 Сообщение удалено</b>\n\nTelegram сообщил об удалении, но Ghost не получил исходный текст. Это бывает, если сообщение было отправлено до подключения или не входило в разрешённый доступ бота.`
+        );
+      }
+      continue;
+    }
+    const event = {
+      type: "deleted",
+      chatId,
+      chatTitle: previous.chatTitle || chatTitle(deleted.chat),
+      sender: previous.sender,
+      text: clip(previous.text)
+    };
+    await recordEvent(connection.ownerId, event);
+    if ((await getAccessState(connection.ownerId)).kind === "locked") {
+      await recordLockedEvent(connection.ownerId, event);
+      await sendLockedEventNotice(connection, "deleted");
       continue;
     }
     await notifyOwner(connection.userChatId,
@@ -344,13 +573,6 @@ async function processDeletedBusinessMessages(deleted) {
       `<b>${escapeHtml(previous.sender)}:</b>\n<blockquote>${escapeHtml(previous.text)}</blockquote>\n` +
       `<i>Сохранено после подключения ${escapeHtml(BRAND)}.</i>`
     );
-    await recordEvent(connection.ownerId, {
-      type: "deleted",
-      chatId,
-      chatTitle: previous.chatTitle || chatTitle(deleted.chat),
-      sender: previous.sender,
-      text: clip(previous.text)
-    });
   }
 }
 
@@ -368,11 +590,17 @@ async function storeConnection(connection) {
   await addOwnerKey(ownerId, `connection:${connection.id}`);
   if (connection.is_enabled) {
     await addToSet("business:enabled", ownerId);
+    const trial = await startTrial(data);
+    const trialText = trial
+      ? `\n\n🎁 <b>Пробный период активирован на 3 дня.</b> До ${new Date(trial.endsAt).toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" })} Ghost будет показывать содержимое новых доступных событий бесплатно.`
+      : "";
     await notifyOwner(connection.user_chat_id,
-      `✅ <b>${escapeHtml(BRAND)} подключён и готов к работе.</b>\n\nЯ буду присылать уведомления, если Telegram передаст мне событие удаления или изменения в чатах, которые вы разрешили. Старые сообщения до подключения недоступны.`
+      `✅ <b>${escapeHtml(BRAND)} подключён и готов к работе.</b>\n\nЯ буду присылать уведомления, если Telegram передаст мне событие удаления или изменения в чатах, которые вы разрешили. Старые сообщения до подключения недоступны.${trialText}`
     );
   } else {
     await removeFromSet("business:enabled", ownerId);
+    await removeFromSet(trialActiveKey, ownerId);
+    await removeFromSet(funnelPendingKey, ownerId);
     await eraseOwnerData(ownerId);
   }
 }
@@ -380,6 +608,8 @@ async function storeConnection(connection) {
 async function eraseOwnerData(ownerId) {
   const keys = (await kvRequest(["SMEMBERS", `owner:${ownerId}:keys`])) || [];
   await remove(...keys, `owner:${ownerId}:keys`);
+  await removeFromSet(trialActiveKey, ownerId);
+  await removeFromSet(funnelPendingKey, ownerId);
 }
 
 const escapeHtml = (value) => String(value || "").replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]);
@@ -595,7 +825,9 @@ async function sendBroadcastPreview(chatId, adminId) {
   return telegram("sendMessage", { chat_id: chatId, text: "Проверьте превью поста.", reply_markup: broadcastControls("preview") });
 }
 
-async function sendSettingsPrompt(chatId) {
+async function sendSettingsPrompt(chatId, ownerId = chatId) {
+  await beginFunnel(ownerId);
+  await updateFunnel(ownerId, "settings_requested");
   return telegram("sendMessage", {
     chat_id: chatId,
     text: `Откройте <a href="tg://settings/edit">настройки профиля Telegram</a>, пролистайте вниз и найдите «Автоматизация чатов». Затем вставьте <code>@${BOT_USERNAME}</code>.`,
@@ -678,7 +910,8 @@ async function commandHandler(message) {
   if (publicRef) return telegram("sendMessage", { chat_id: message.chat.id, text: referralReport(await referralStats(publicRef[1].toLowerCase())), parse_mode: "HTML" });
   if (command === "/admin" && message.from && isAdmin(message.from.id)) return sendAdminPanel(message.chat.id);
   if (command === "/start") {
-    if (argument === "settings") return sendSettingsPrompt(message.chat.id);
+    await beginFunnel(message.from.id);
+    if (argument === "settings") return sendSettingsPrompt(message.chat.id, message.from.id);
     if (argument?.startsWith("buy_")) return sendStarsInvoice(message.chat.id, argument.slice(4));
     if (argument) await registerReferralVisit(argument.toLowerCase(), message);
     const language = (await get(`language:${message.from.id}`))?.code || "ru";
@@ -715,7 +948,7 @@ async function callbackHandler(callback) {
   const [action, suppliedId] = (callback.data || "").split(":");
   if (action === "connect") {
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
-    return sendSettingsPrompt(callback.message.chat.id);
+    return sendSettingsPrompt(callback.message.chat.id, callback.from.id);
   }
   if (action === "admin") {
     if (!isAdmin(callback.from.id)) return telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Нет доступа", show_alert: true });
@@ -826,13 +1059,24 @@ export async function getDashboard(ownerId, { tzOffset = 0, limit = 20 } = {}) {
   const connected = enabled.map(String).includes(String(ownerId));
   if (!connected) return { connected: false };
   const events = (await get(`events:${ownerId}`)) || [];
+  const access = await getAccessState(ownerId);
   const chats = (await members(`owner:${ownerId}:chats`)).length;
   const offsetMs = (Number(tzOffset) || 0) * 60 * 1000;
   const localNow = new Date(Date.now() - offsetMs);
   const startOfDay = Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate()) + offsetMs;
   const today = { deleted: 0, edited: 0 };
   for (const event of events) if (event.at >= startOfDay && today[event.type] !== undefined) today[event.type]++;
-  return { connected: true, chats, today, events: events.slice(0, limit) };
+  const visibleEvents = access.kind === "locked"
+    ? events.slice(0, limit).map(({ type, at, unknown }) => ({ type, at, unknown, locked: true }))
+    : events.slice(0, limit);
+  return {
+    connected: true,
+    chats,
+    today,
+    access: access.kind,
+    trial: access.trial ? { status: access.trial.status, startedAt: access.trial.startedAt, endsAt: access.trial.endsAt } : null,
+    events: visibleEvents
+  };
 }
 
 export async function processUpdate(update) {

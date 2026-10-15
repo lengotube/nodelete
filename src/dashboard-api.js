@@ -10,7 +10,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { getDashboard } from "../api/telegram.js";
+import { getDashboard, trackFunnelEvent } from "../api/telegram.js";
 
 const MAX_AGE_SECONDS = 24 * 60 * 60;
 
@@ -56,12 +56,16 @@ export function startDashboardApi({ port = Number(process.env.DASHBOARD_PORT) ||
   const server = createServer(async (request, response) => {
     const path = new URL(request.url, "http://localhost").pathname;
     if (path === "/health") return send(response, 200, { ok: true });
-    if (path !== "/api/dashboard") return send(response, 404, { ok: false });
+    if (path !== "/api/dashboard" && path !== "/api/funnel") return send(response, 404, { ok: false });
     if (request.method !== "POST") return send(response, 405, { ok: false });
     let user;
     try {
       const body = JSON.parse((await readBody(request)) || "{}");
       user = verifyInitData(body.initData);
+      if (path === "/api/funnel") {
+        await trackFunnelEvent(user.id, body.stage);
+        return send(response, 200, { ok: true });
+      }
       const data = await getDashboard(user.id, { tzOffset: body.tzOffset });
       return send(response, 200, { ok: true, ...data });
     } catch (error) {
