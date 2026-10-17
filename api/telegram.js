@@ -7,6 +7,8 @@ const APP_URL = (process.env.PUBLIC_APP_URL || "").replace(/\/$/, "");
 const BRAND = process.env.BOT_BRAND || "Ghost";
 const BOT_USERNAME = process.env.BOT_USERNAME || "ghostmsg_robot";
 const SUPPORT_URL = process.env.SUPPORT_URL || "";
+const TERMS_URL = process.env.TERMS_URL || "https://telegra.ph/Polzovatelskoe-soglashenie-Ghost-10-17";
+const PRIVACY_URL = process.env.PRIVACY_URL || "https://telegra.ph/Politika-konfidencialnosti-Ghost-10-17";
 const ADMIN_IDS = new Set((process.env.ADMIN_IDS || "7822690557").split(",").map((id) => id.trim()).filter(Boolean));
 const RETENTION_SECONDS = 90 * 24 * 60 * 60;
 const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000;
@@ -53,6 +55,8 @@ const welcomeText = (appUrl) => `
 <a href="${appUrl}/app?screen=help">У меня не работает ›</a>
 <a href="${appUrl}/app?screen=groups">Как настроить в группах ›</a>
 <a href="${appUrl}/app?screen=backup">Как настроить резервную копию переписок ›</a>
+<a href="${TERMS_URL}">Пользовательское соглашение ›</a>
+<a href="${PRIVACY_URL}">Политика конфиденциальности ›</a>
 `.trim();
 
 const welcomeTextEn = (appUrl) => `
@@ -75,6 +79,8 @@ This works through an <b>official Telegram feature</b> — <a href="https://t.me
 <a href="${appUrl}/app?screen=help">It doesn't work ›</a>
 <a href="${appUrl}/app?screen=groups">How do groups work? ›</a>
 <a href="${appUrl}/app?screen=backup">How do backups work? ›</a>
+<a href="${TERMS_URL}">Terms of Service ›</a>
+<a href="${PRIVACY_URL}">Privacy Policy ›</a>
 `.trim();
 
 const telegram = async (method, payload) => {
