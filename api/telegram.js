@@ -127,7 +127,10 @@ const unseal = (value) => {
   return JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8"));
 };
 
-const localStore = async (command) => {
+// The file backend is used on the VPS. Serialize access inside the process:
+// a GET from long-polling and a scheduled funnel write may otherwise try to
+// replace the same temporary file at once and corrupt the JSON store.
+const localStoreOnce = async (command) => {
   const file = process.env.LOCAL_DATA_FILE;
   if (!file) throw new Error("Vercel KV or LOCAL_DATA_FILE must be configured");
   await mkdir(dirname(file), { recursive: true });
@@ -149,10 +152,19 @@ const localStore = async (command) => {
   else if (verb === "SMEMBERS") result = store.sets[args[0]]?.members || [];
   else if (verb === "EXPIRE") { const [key, seconds] = args; const record = store.strings[key] || store.sets[key]; if (record) record.expiresAt = now + Number(seconds) * 1000; result = record ? 1 : 0; }
   else throw new Error(`Unsupported local storage command: ${verb}`);
-  const temporary = `${file}.tmp`;
+  const temporary = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
   await writeFile(temporary, JSON.stringify(store), { mode: 0o600 });
   await rename(temporary, file);
   return result;
+};
+
+let localStoreQueue = Promise.resolve();
+const localStore = (command) => {
+  const task = localStoreQueue.then(() => localStoreOnce(command));
+  // Keep later commands available after a failed read/write while returning the
+  // original failure to the caller that triggered it.
+  localStoreQueue = task.catch(() => undefined);
+  return task;
 };
 
 const kvRequest = async (command) => {
