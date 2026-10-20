@@ -204,6 +204,17 @@ body.light .tag.del { background: #fbd9d9; color: #c93a3a; }
 .plan p { margin: 2px 0 14px; color: var(--muted); font-size: 14px; }
 .plan.popular .outline { border-color: transparent; background: var(--accent); color: var(--on-accent); }
 .payment-note { color: var(--faint); font-size: 13px; text-align: center; }
+.payment-methods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0 0 14px; }
+.payment-method { display: flex; min-height: 48px; align-items: center; justify-content: center; gap: 6px; padding: 8px 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 600; }
+.payment-method.selected { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.sbp-logo { display: inline-grid; min-width: 24px; min-height: 20px; place-items: center; border-radius: 5px; background: linear-gradient(135deg,#22a861 0 42%,#18a6d8 42% 62%,#f3a13b 62%); color: #fff; font-size: 8px; font-weight: 800; letter-spacing: -.7px; line-height: 1; }
+.bitcoin-logo { display: inline-grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; background: #f7931a; color: #fff; font-size: 16px; font-weight: 700; line-height: 1; }
+.checkout-action { display: flex; width: 100%; min-height: 54px; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; border-radius: var(--radius); color: var(--on-accent); font-size: 16px; font-weight: 700; }
+.checkout-action.stars { background: var(--accent); }
+.checkout-action.sbp { background: #1877c9; }
+.checkout-action.crypto { background: linear-gradient(135deg,#eb8818,#f5a432); }
+.checkout-action .sbp-logo { min-width: 29px; min-height: 24px; font-size: 9px; }
+.checkout-action .bitcoin-logo { width: 25px; height: 25px; font-size: 18px; background: rgba(255,255,255,.2); border: 1px solid rgba(255,255,255,.32); }
 
 /* Groups */
 .group-notice { margin-bottom: 12px; padding: 16px 18px; border-radius: 18px; background: var(--accent-soft); }
