@@ -129,6 +129,9 @@ body.light .tag.del { background: #fbd9d9; color: #c93a3a; }
 .feed-empty { padding: 22px 18px; text-align: center; }
 .feed-empty b { font-size: 15px; font-weight: 600; }
 .feed-empty p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+.feed-actions { display: flex; gap: 8px; margin-top: 10px; }
+.feed-action { flex: 1; min-height: 42px; padding: 0 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); color: var(--muted); font-size: 14px; font-weight: 600; }
+.feed-action.more { border-color: var(--accent); color: var(--accent); }
 
 /* Lists */
 .dashboard, .settings-list { overflow: hidden; border-radius: 20px; background: var(--surface); }
@@ -207,6 +210,7 @@ body.light .tag.del { background: #fbd9d9; color: #c93a3a; }
 .group-notice b { font-size: 16px; font-weight: 600; }
 .group-notice p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
 .group-packages { display: grid; gap: 8px; }
+.personal-packages { margin-top: 2px; }
 .group-package { display: flex; width: 100%; align-items: center; gap: 12px; padding: 15px 16px; border: 1px solid transparent; border-radius: 18px; background: var(--surface); text-align: left; transition: border-color .16s; }
 .group-package.selected { border-color: var(--accent); }
 .group-package > span { display: grid; gap: 2px; flex: 1; }

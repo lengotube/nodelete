@@ -1091,7 +1091,7 @@ async function callbackHandler(callback) {
  * Summary for the Mini App home screen. `tzOffset` is the viewer's
  * Date#getTimezoneOffset() so "today" matches their local day.
  */
-export async function getDashboard(ownerId, { tzOffset = 0, limit = 20 } = {}) {
+export async function getDashboard(ownerId, { tzOffset = 0, limit = EVENT_LIMIT } = {}) {
   const enabled = await members("business:enabled");
   const connected = enabled.map(String).includes(String(ownerId));
   if (!connected) return { connected: false };
