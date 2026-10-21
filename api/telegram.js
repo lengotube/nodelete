@@ -687,7 +687,10 @@ async function registerReferralVisit(code, message) {
   if (!referral || !message.from) return null;
   const stats = (await get(`referral:${code}:events`)) || { clicks: 0 };
   await put(`referral:${code}:events`, { clicks: stats.clicks + 1 }, null);
+  // First visit per user is what the link costs (unique visitors × price); keep its time for the ledger panel.
+  const isFirstVisit = !(await members(`referral:${code}:visitors`)).map(String).includes(String(message.from.id));
   await addToSet(`referral:${code}:visitors`, message.from.id);
+  if (isFirstVisit) await addToSet("ledger:ref_visits", `${Date.now()}|${code}|${message.from.id}|${referral.price}`);
   await registerUser(message, code);
   return referral;
 }
@@ -1114,6 +1117,33 @@ export async function getDashboard(ownerId, { tzOffset = 0, limit = EVENT_LIMIT 
     trial: access.trial ? { status: access.trial.status, startedAt: access.trial.startedAt, endsAt: access.trial.endsAt } : null,
     events: visibleEvents
   };
+}
+
+/**
+ * Read-only export for the accounting panel on the same server: Stars payments and
+ * first ad-link visits since the given times (ms since epoch).
+ */
+export async function getLedgerExport({ paymentsSince = 0, visitsSince = 0, includeUsers = false } = {}) {
+  const payments = [];
+  for (const chargeId of await members("payments:ids")) {
+    const payment = await get(`payment:${chargeId}`);
+    const at = payment?.purchasedAt ? Date.parse(payment.purchasedAt) : NaN;
+    if (!payment || !(at >= paymentsSince)) continue;
+    payments.push({ chargeId, userId: payment.userId, plan: payment.plan, amount: payment.amount, currency: payment.currency, at });
+  }
+  const visits = [];
+  for (const entry of await members("ledger:ref_visits")) {
+    const [at, code, userId, price] = String(entry).split("|");
+    if (Number(at) >= visitsSince) visits.push({ at: Number(at), code, userId: Number(userId), price: Number(price) || 0 });
+  }
+  if (!includeUsers) return { payments, visits };
+  // Users for retention / activity metrics: id, join date, ad link, last activity. Blocked = users:invalid.
+  const users = [];
+  for (const id of await members("users:active")) {
+    const user = await get(`user:${id}`);
+    if (user) users.push({ id: user.id, joinedAt: user.joinedAt, lastSeenAt: user.lastSeenAt, referralCode: user.referralCode });
+  }
+  return { payments, visits, users, invalid: await members("users:invalid") };
 }
 
 export async function processUpdate(update) {

@@ -10,7 +10,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { getDashboard, trackFunnelEvent } from "../api/telegram.js";
+import { getDashboard, getLedgerExport, trackFunnelEvent } from "../api/telegram.js";
 
 const MAX_AGE_SECONDS = 24 * 60 * 60;
 
@@ -52,10 +52,33 @@ const readBody = (request, limit = 16 * 1024) => new Promise((resolve, reject) =
   request.on("error", reject);
 });
 
+// Accounting panel export. Needs LEDGER_EXPORT_TOKEN; without it the path does not exist.
+// The public proxy forwards only /api/dashboard, /api/funnel and /health, so this stays local.
+async function ledgerExport(request, response) {
+  const token = process.env.LEDGER_EXPORT_TOKEN;
+  if (!token || request.method !== "GET") return send(response, 404, { ok: false });
+  const expected = Buffer.from(token);
+  const provided = Buffer.from(String(request.headers["x-ledger-token"] || ""));
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return send(response, 404, { ok: false });
+  try {
+    const params = new URL(request.url, "http://localhost").searchParams;
+    const data = await getLedgerExport({
+      paymentsSince: Number(params.get("payments_since")) || 0,
+      visitsSince: Number(params.get("visits_since")) || 0,
+      includeUsers: params.get("users") === "1"
+    });
+    return send(response, 200, { ok: true, ...data });
+  } catch (error) {
+    console.error("Ledger export failed", error);
+    return send(response, 500, { ok: false });
+  }
+}
+
 export function startDashboardApi({ port = Number(process.env.DASHBOARD_PORT) || 8787, host = process.env.DASHBOARD_HOST || "127.0.0.1" } = {}) {
   const server = createServer(async (request, response) => {
     const path = new URL(request.url, "http://localhost").pathname;
     if (path === "/health") return send(response, 200, { ok: true });
+    if (path === "/api/ledger") return ledgerExport(request, response);
     if (path !== "/api/dashboard" && path !== "/api/funnel") return send(response, 404, { ok: false });
     if (request.method !== "POST") return send(response, 405, { ok: false });
     let user;
