@@ -820,7 +820,16 @@ const signedRub = (value) => {
   const rounded = Math.round(value);
   return rounded === 0 ? "0 ₽" : `${rounded > 0 ? "+" : "−"}${money(Math.abs(rounded))} ₽`;
 };
-const resultIcon = (value) => (Math.round(value) > 0 ? "🟢" : Math.round(value) < 0 ? "🔴" : "⚪️");
+const premiumEmoji = (id, fallback) => `<tg-emoji emoji-id="${id}">${fallback}</tg-emoji>`;
+const CARD_EMOJI = {
+  plus: premiumEmoji("5339112148175959615", "🟢"),
+  minus: premiumEmoji("4927486932113425461", "❗️"),
+  zero: premiumEmoji("5339113303522161846", "⚪️"),
+  traffic: premiumEmoji("6032594876506312598", "👥"),
+  money: premiumEmoji("5409048419211682843", "💵"),
+  locked: premiumEmoji("5231302159739395058", "🔒")
+};
+const resultIcon = (value) => (Math.round(value) > 0 ? CARD_EMOJI.plus : Math.round(value) < 0 ? CARD_EMOJI.minus : CARD_EMOJI.zero);
 
 function referralCard(stats, compact = false) {
   if (!stats) return "Ссылка не найдена.";
@@ -842,7 +851,7 @@ function referralCard(stats, compact = false) {
   const lines = [
     ...head,
     "",
-    "👥 <b>Трафик</b>",
+    `${CARD_EMOJI.traffic} <b>Трафик</b>`,
     `<blockquote>Переходов: <b>${money(stats.clicks)}</b>\nУникальных: <b>${money(stats.unique)}</b>\n` +
       `С Telegram Premium: <b>${money(stats.premium)}</b> · ${share(stats.premium, stats.unique)}%</blockquote>`,
     "🔻 <b>Воронка</b>",
@@ -853,10 +862,10 @@ function referralCard(stats, compact = false) {
       `Событий на человека: <b>${stats.caught ? ruNumber(stats.eventsPerUser) : "—"}</b></blockquote>`
   ];
   if (stats.lockedNoPay) {
-    lines.push(`🔒 Не купили, но идут события: <b>${money(stats.lockedNoPay)}</b>`, "<i>↳ тёплая аудитория для дожима</i>", "");
+    lines.push(`${CARD_EMOJI.locked} Не купили, но идут события: <b>${money(stats.lockedNoPay)}</b>`, "<i>↳ тёплая аудитория для дожима</i>", "");
   }
   lines.push(
-    "💰 <b>Деньги</b>",
+    `${CARD_EMOJI.money} <b>Деньги</b>`,
     `<blockquote>Доход: <b>${money(stats.stars)} ⭐</b> ≈ ${money(Math.round(stats.revenue))} ₽\n` +
       `Расход: <b>${money(stats.totalCost)} ₽</b>\n` +
       `Платящий: <b>${stats.costPerPayer === null ? "—" : `${money(Math.round(stats.costPerPayer))} ₽`}</b></blockquote>`,
