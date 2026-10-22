@@ -808,6 +808,73 @@ function referralReport(stats, detailed = false) {
   return rows.filter((row) => row !== null).join("\n");
 }
 
+// Admin card for /ref_<link>: traffic, funnel with step conversion, money and result.
+// compact = headline only; the buttons switch between the two views and refresh in place.
+const ruNumber = (value, digits = 1) => Number(value || 0).toLocaleString("ru-RU", { maximumFractionDigits: digits });
+const share = (part, whole) => (whole ? Math.round(part / whole * 100) : 0);
+const bar = (percent) => {
+  const filled = Math.max(0, Math.min(10, Math.round(percent / 10)));
+  return `<code>${"▰".repeat(filled)}${"▱".repeat(10 - filled)}</code>`;
+};
+const signedRub = (value) => {
+  const rounded = Math.round(value);
+  return rounded === 0 ? "0 ₽" : `${rounded > 0 ? "+" : "−"}${money(Math.abs(rounded))} ₽`;
+};
+const resultIcon = (value) => (Math.round(value) > 0 ? "🟢" : Math.round(value) < 0 ? "🔴" : "⚪️");
+
+function referralCard(stats, compact = false) {
+  if (!stats) return "Ссылка не найдена.";
+  const code = escapeHtml(stats.code);
+  const roi = stats.totalCost ? ` · ROI ${stats.result >= 0 ? "+" : "−"}${money(Math.abs(Math.round(stats.result / stats.totalCost * 100)))}%` : "";
+  const result = `${resultIcon(stats.result)} <b>Итог: ${signedRub(stats.result)}</b>${roi}`;
+  if (compact) {
+    return [
+      `📣 <b>${code}</b> — ${resultIcon(stats.result)} <b>${signedRub(stats.result)}</b>${roi}`,
+      `${money(stats.unique)} чел. · ${money(stats.payers)} купили · ${stats.costPerPayer === null ? "—" : `${money(Math.round(stats.costPerPayer))} ₽`} за платящего`
+    ].join("\n");
+  }
+  const created = stats.createdAt ? ` · создана ${new Date(stats.createdAt).toLocaleDateString("ru-RU")}` : "";
+  const head = [`📣 <b>${code}</b>`, `<i>${money(stats.price)} ₽ за пользователя${created}</i>`];
+  if (!stats.unique) return [...head, "", "Переходов пока не было.", "", result].join("\n");
+  const trialShare = share(stats.trial, stats.unique);
+  const caughtShare = share(stats.caught, stats.trial);
+  const paidShare = share(stats.payers, stats.caught || stats.unique);
+  const lines = [
+    ...head,
+    "",
+    "👥 <b>Трафик</b>",
+    `<blockquote>Переходов: <b>${money(stats.clicks)}</b>\nУникальных: <b>${money(stats.unique)}</b>\n` +
+      `С Telegram Premium: <b>${money(stats.premium)}</b> · ${share(stats.premium, stats.unique)}%</blockquote>`,
+    "🔻 <b>Воронка</b>",
+    `<blockquote>${bar(trialShare)} ${trialShare}% · Подключили триал: <b>${money(stats.trial)}</b>\n` +
+      `${bar(caughtShare)} ${caughtShare}% · Поймали событие: <b>${money(stats.caught)}</b>\n` +
+      `${bar(paidShare)} ${paidShare}% · Купили тариф: <b>${money(stats.payers)}</b>\n` +
+      `После триала: <b>${money(stats.paidAfterTrial)}</b> · сейчас активны: <b>${money(stats.subscribed)}</b>\n` +
+      `Событий на человека: <b>${stats.caught ? ruNumber(stats.eventsPerUser) : "—"}</b></blockquote>`
+  ];
+  if (stats.lockedNoPay) {
+    lines.push(`🔒 Не купили, но идут события: <b>${money(stats.lockedNoPay)}</b>`, "<i>↳ тёплая аудитория для дожима</i>", "");
+  }
+  lines.push(
+    "💰 <b>Деньги</b>",
+    `<blockquote>Доход: <b>${money(stats.stars)} ⭐</b> ≈ ${money(Math.round(stats.revenue))} ₽\n` +
+      `Расход: <b>${money(stats.totalCost)} ₽</b>\n` +
+      `Платящий: <b>${stats.costPerPayer === null ? "—" : `${money(Math.round(stats.costPerPayer))} ₽`}</b></blockquote>`,
+    result
+  );
+  return lines.join("\n");
+}
+
+function referralCardKeyboard(code, compact) {
+  return { inline_keyboard: [
+    [
+      compact ? { text: "▾ Развернуть", callback_data: `reff:${code}` } : { text: "▴ Свернуть", callback_data: `refc:${code}` },
+      { text: "🔄 Обновить", callback_data: `${compact ? "refc" : "reff"}:${code}` }
+    ],
+    [{ text: "← К списку ссылок", callback_data: "admin:referrals" }]
+  ] };
+}
+
 async function allReferralStats() {
   const payments = await paymentsByUser();
   const codes = (await members("referrals:codes")).sort();
@@ -1040,7 +1107,12 @@ async function commandHandler(message) {
   const fullRef = command.match(/^\/ref_([a-z0-9_-]+)$/i);
   const publicRef = command.match(/^\/refssilkacheck_([a-z0-9_-]+)$/i);
   if (fullRef && message.from && isAdmin(message.from.id)) {
-    return telegram("sendMessage", { chat_id: message.chat.id, text: referralReport(await referralStats(fullRef[1].toLowerCase()), true), parse_mode: "HTML" });
+    const code = fullRef[1].toLowerCase();
+    const stats = await referralStats(code);
+    return telegram("sendMessage", {
+      chat_id: message.chat.id, text: referralCard(stats), parse_mode: "HTML",
+      ...(stats ? { reply_markup: referralCardKeyboard(code, false) } : {})
+    });
   }
   if (publicRef) return telegram("sendMessage", { chat_id: message.chat.id, text: referralReport(await referralStats(publicRef[1].toLowerCase())), parse_mode: "HTML" });
   if (command === "/admin" && message.from && isAdmin(message.from.id)) return sendAdminPanel(message.chat.id);
@@ -1108,6 +1180,25 @@ async function callbackHandler(callback) {
       await removeFromSet("users:active", ...invalid);
       await removeFromSet("users:invalid", ...invalid);
       return telegram("sendMessage", { chat_id: callback.message.chat.id, text: `Удалено из базы рассылки: <b>${invalid.length}</b>.`, parse_mode: "HTML", reply_markup: adminKeyboard() });
+    }
+  }
+  if (action === "reff" || action === "refc") {
+    if (!isAdmin(callback.from.id)) return telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Нет доступа", show_alert: true });
+    const compact = action === "refc";
+    const code = String(suppliedId || "").toLowerCase();
+    const stats = await referralStats(code);
+    try {
+      await telegram("editMessageText", {
+        chat_id: callback.message.chat.id, message_id: callback.message.message_id,
+        text: referralCard(stats, compact), parse_mode: "HTML",
+        ...(stats ? { reply_markup: referralCardKeyboard(code, compact) } : {})
+      });
+      return telegram("answerCallbackQuery", { callback_query_id: callback.id });
+    } catch (error) {
+      // Refreshing an unchanged card is rejected by Telegram as "message is not modified".
+      const unchanged = /not modified/i.test(String(error?.message));
+      if (!unchanged) console.error("Referral card update failed", error);
+      return telegram("answerCallbackQuery", { callback_query_id: callback.id, text: unchanged ? "Новых данных нет" : "Не удалось обновить" });
     }
   }
   if (action === "compose") {
