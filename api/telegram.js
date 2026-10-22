@@ -229,6 +229,22 @@ async function recordEvent(ownerId, event) {
   list.unshift({ ...event, at: Date.now() });
   await put(key, list.slice(0, EVENT_LIMIT));
   await addOwnerKey(ownerId, key);
+  await trackRefUser(ownerId, (r) => { r.events = (r.events || 0) + 1; r.firstEventAt ||= Date.now(); });
+}
+
+// Ad-link funnel card for users who came by a referral link. Unlike the owner's events and trial,
+// it survives disconnecting the bot (only /my_data deletion removes it), so link stats stay complete.
+const refUserKey = (userId) => `refuser:${userId}`;
+async function trackRefUser(userId, update) {
+  try {
+    const user = await get(`user:${userId}`);
+    if (!user?.referralCode) return;
+    const record = (await get(refUserKey(userId))) || { code: user.referralCode };
+    update(record);
+    await put(refUserKey(userId), record, null);
+  } catch (error) {
+    console.error("Referral stats update failed", error);
+  }
 }
 
 const senderName = (message) => [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") || "Собеседник";
@@ -305,6 +321,7 @@ async function startTrial(connection) {
   await addToSet(trialActiveKey, ownerId);
   await updateFunnel(ownerId, "trial_started", { connectedAt: startedAt });
   await removeFromSet(funnelPendingKey, ownerId);
+  await trackRefUser(ownerId, (r) => { r.trialAt ||= startedAt; });
   return trial;
 }
 
@@ -339,6 +356,7 @@ async function recordLockedEvent(ownerId, event) {
   list.unshift(event);
   await put(key, list.slice(0, 25), null);
   await rememberOwnerData(ownerId, key);
+  await trackRefUser(ownerId, (r) => { r.locked = (r.locked || 0) + 1; r.lockedAt ||= Date.now(); });
 }
 
 async function sendLockedEventNotice(connection, type) {
@@ -664,10 +682,14 @@ async function registerUser(message, referralCode = null) {
     username: message.from.username || null,
     joinedAt: previous?.joinedAt || new Date().toISOString(),
     referralCode: previous?.referralCode || referralCode || null,
+    isPremium: Boolean(message.from.is_premium),
     lastSeenAt: new Date().toISOString()
   };
   await put(key, user, null);
   await addToSet("users:active", message.from.id);
+  if (user.referralCode && (!previous || previous.isPremium !== user.isPremium)) {
+    await trackRefUser(user.id, (r) => { r.premium = user.isPremium; });
+  }
   return { user, isNew: !previous };
 }
 
@@ -695,15 +717,65 @@ async function registerReferralVisit(code, message) {
   return referral;
 }
 
-async function referralStats(code) {
+const STARS_RUB_RATE = Number(process.env.STARS_RUB_RATE) || 1;
+
+// Stars paid per user over all time: { userId: { stars, lastAt } }.
+async function paymentsByUser() {
+  const byUser = {};
+  for (const chargeId of await members("payments:ids")) {
+    const payment = await get(`payment:${chargeId}`);
+    if (!payment?.userId || payment.currency !== "XTR") continue;
+    const at = Date.parse(payment.purchasedAt) || 0;
+    const row = byUser[payment.userId] ||= { stars: 0, lastAt: 0 };
+    row.stars += Number(payment.amount) || 0;
+    row.lastAt = Math.max(row.lastAt, at);
+  }
+  return byUser;
+}
+
+// Funnel card of a visitor; users from before the card existed are rebuilt from what is still stored.
+async function refUserRecord(userId) {
+  const stored = await get(refUserKey(userId));
+  if (stored) return stored;
+  const [trial, events, locked, user] = await Promise.all([
+    get(trialKey(userId)), get(`events:${userId}`), get(lockedEventsKey(userId)), get(`user:${userId}`)
+  ]);
+  return {
+    trialAt: trial?.startedAt || null,
+    events: events?.length || 0,
+    locked: locked?.length || 0,
+    premium: user?.isPremium
+  };
+}
+
+async function referralStats(code, payments = null) {
   const referral = await get(`referral:${code}`);
   if (!referral) return null;
   const event = (await get(`referral:${code}:events`)) || { clicks: 0 };
   const visitors = await members(`referral:${code}:visitors`);
-  let paid = 0;
-  for (const id of visitors) if (await get(`subscription:${id}`)) paid++;
+  const paidBy = payments || await paymentsByUser();
+  const s = { premium: 0, trial: 0, caught: 0, events: 0, payers: 0, paidAfterTrial: 0, lockedNoPay: 0, stars: 0, subscribed: 0 };
+  for (const id of visitors) {
+    const record = await refUserRecord(id);
+    const pay = paidBy[id];
+    if (record.premium === true) s.premium++;
+    if (record.trialAt) s.trial++;
+    if (record.events > 0) { s.caught++; s.events += record.events; }
+    if (pay) { s.payers++; s.stars += pay.stars; }
+    if (record.trialAt && pay && pay.lastAt >= record.trialAt) s.paidAfterTrial++;
+    if (record.locked > 0 && !pay) s.lockedNoPay++;
+    if (await get(`subscription:${id}`)) s.subscribed++;
+  }
   const unique = visitors.length;
-  return { ...referral, clicks: event.clicks, unique, paid, conversion: unique ? paid / unique * 100 : 0, totalCost: unique * referral.price };
+  const totalCost = unique * referral.price;
+  const revenue = s.stars * STARS_RUB_RATE;
+  return {
+    ...referral, ...s, clicks: event.clicks, unique, paid: s.payers,
+    conversion: unique ? s.payers / unique * 100 : 0,
+    eventsPerUser: s.caught ? s.events / s.caught : 0,
+    costPerPayer: s.payers ? totalCost / s.payers : null,
+    totalCost, revenue, result: revenue - totalCost
+  };
 }
 
 function referralReport(stats, detailed = false) {
@@ -715,8 +787,31 @@ function referralReport(stats, detailed = false) {
     `Уникальных пользователей: <b>${money(stats.unique)}</b>`,
     `Конверсия в оплату: <b>${stats.conversion.toFixed(1)}%</b>`,
     `Итоговая стоимость: <b>${money(stats.totalCost)}</b>`
-  ].filter(Boolean);
-  return rows.join("\n");
+  ];
+  if (detailed) {
+    rows.push(
+      "",
+      `С Telegram Premium: <b>${money(stats.premium)}</b>`,
+      `Подключили триал: <b>${money(stats.trial)}</b>`,
+      `Поймали событие: <b>${money(stats.caught)}</b>`,
+      `Событий на пользователя: <b>${stats.eventsPerUser.toFixed(1)}</b>`,
+      `Купили тариф: <b>${money(stats.payers)}</b> (сейчас с активной подпиской: ${money(stats.subscribed)})`,
+      `Подключились после триала: <b>${money(stats.paidAfterTrial)}</b>`,
+      `Не купили, но приходят скрытые события: <b>${money(stats.lockedNoPay)}</b>`,
+      `Стоимость платящего: <b>${stats.costPerPayer === null ? "—" : money(Math.round(stats.costPerPayer))}</b>`,
+      "",
+      `Доход: <b>${money(stats.stars)} ⭐</b> (≈ ${money(Math.round(stats.revenue))} ₽)`,
+      `Расход: <b>${money(stats.totalCost)} ₽</b>`,
+      `Итог: <b>${stats.result >= 0 ? "+" : "−"}${money(Math.abs(Math.round(stats.result)))} ₽</b>`
+    );
+  }
+  return rows.filter((row) => row !== null).join("\n");
+}
+
+async function allReferralStats() {
+  const payments = await paymentsByUser();
+  const codes = (await members("referrals:codes")).sort();
+  return (await Promise.all(codes.map((code) => referralStats(code, payments)))).filter(Boolean);
 }
 
 function adminKeyboard() {
@@ -1077,6 +1172,7 @@ async function callbackHandler(callback) {
   }
   if (action === "erase" && String(callback.from.id) === suppliedId) {
     await eraseOwnerData(callback.from.id);
+    await remove(refUserKey(callback.from.id));
     await telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Данные удалены" });
     return telegram("editMessageText", {
       chat_id: callback.message.chat.id,
@@ -1143,7 +1239,13 @@ export async function getLedgerExport({ paymentsSince = 0, visitsSince = 0, incl
     const user = await get(`user:${id}`);
     if (user) users.push({ id: user.id, joinedAt: user.joinedAt, lastSeenAt: user.lastSeenAt, referralCode: user.referralCode });
   }
-  return { payments, visits, users, invalid: await members("users:invalid") };
+  const links = (await allReferralStats()).map((s) => ({
+    code: s.code, price: s.price, clicks: s.clicks, unique: s.unique, premium: s.premium, trial: s.trial,
+    caught: s.caught, eventsPerUser: s.eventsPerUser, payers: s.payers, paidAfterTrial: s.paidAfterTrial,
+    lockedNoPay: s.lockedNoPay, costPerPayer: s.costPerPayer, stars: s.stars, revenue: s.revenue,
+    cost: s.totalCost, result: s.result
+  }));
+  return { payments, visits, users, invalid: await members("users:invalid"), links };
 }
 
 export async function processUpdate(update) {
