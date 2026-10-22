@@ -822,6 +822,7 @@ const signedRub = (value) => {
 };
 const premiumEmoji = (id, fallback) => `<tg-emoji emoji-id="${id}">${fallback}</tg-emoji>`;
 const CARD_EMOJI = {
+  link: premiumEmoji("6028338546736107668", "⭐️"),
   plus: premiumEmoji("5339112148175959615", "🟢"),
   minus: premiumEmoji("4927486932113425461", "❗️"),
   zero: premiumEmoji("5339113303522161846", "⚪️"),
@@ -838,12 +839,12 @@ function referralCard(stats, compact = false) {
   const result = `${resultIcon(stats.result)} <b>Итог: ${signedRub(stats.result)}</b>${roi}`;
   if (compact) {
     return [
-      `📣 <b>${code}</b> — ${resultIcon(stats.result)} <b>${signedRub(stats.result)}</b>${roi}`,
+      `${CARD_EMOJI.link} <b>${code}</b> — ${resultIcon(stats.result)} <b>${signedRub(stats.result)}</b>${roi}`,
       `${money(stats.unique)} чел. · ${money(stats.payers)} купили · ${stats.costPerPayer === null ? "—" : `${money(Math.round(stats.costPerPayer))} ₽`} за платящего`
     ].join("\n");
   }
   const created = stats.createdAt ? ` · создана ${new Date(stats.createdAt).toLocaleDateString("ru-RU")}` : "";
-  const head = [`📣 <b>${code}</b>`, `<i>${money(stats.price)} ₽ за пользователя${created}</i>`];
+  const head = [`${CARD_EMOJI.link} <b>${code}</b>`, `<i>${money(stats.price)} ₽ за пользователя${created}</i>`];
   if (!stats.unique) return [...head, "", "Переходов пока не было.", "", result].join("\n");
   const trialShare = share(stats.trial, stats.unique);
   const caughtShare = share(stats.caught, stats.trial);
