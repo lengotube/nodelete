@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sets up the Mini App dashboard API on the bot VPS:
 #   1. updates the bot code (git pull, or downloads the changed files from GitHub),
-#   2. installs Caddy and serves https://<DOMAIN>/api/dashboard -> 127.0.0.1:8787,
+#   2. installs Caddy and serves the Ghost Mini App and payment callback routes,
 #   3. restarts the bot in PM2 and checks the endpoint.
 #
 # Usage (as root on the server):
@@ -55,7 +55,7 @@ say "Настраиваю Caddy"
 CADDYFILE=/etc/caddy/Caddyfile
 BLOCK="# ghost-dashboard-api
 $DOMAIN {
-	@api path /api/dashboard /health
+	@api path /api/dashboard /api/funnel /api/crypto /api/platega-callback /health
 	handle @api {
 		reverse_proxy 127.0.0.1:$PORT
 	}

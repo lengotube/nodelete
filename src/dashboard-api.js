@@ -10,7 +10,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { getDashboard, getLedgerExport, trackFunnelEvent } from "../api/telegram.js";
+import { checkCryptoCheckout, createCryptoCheckout, getDashboard, getLedgerExport, processPlategaCallback, trackFunnelEvent } from "../api/telegram.js";
 
 const MAX_AGE_SECONDS = 24 * 60 * 60;
 
@@ -79,12 +79,28 @@ export function startDashboardApi({ port = Number(process.env.DASHBOARD_PORT) ||
     const path = new URL(request.url, "http://localhost").pathname;
     if (path === "/health") return send(response, 200, { ok: true });
     if (path === "/api/ledger") return ledgerExport(request, response);
-    if (path !== "/api/dashboard" && path !== "/api/funnel") return send(response, 404, { ok: false });
+    if (path === "/api/platega-callback") {
+      if (request.method !== "POST") return send(response, 405, { ok: false });
+      try {
+        const body = JSON.parse((await readBody(request)) || "{}");
+        await processPlategaCallback(request.headers, body);
+        return send(response, 200, { ok: true });
+      } catch (error) {
+        console.error("Platega callback failed", error);
+        return send(response, 401, { ok: false });
+      }
+    }
+    if (path !== "/api/dashboard" && path !== "/api/funnel" && path !== "/api/crypto") return send(response, 404, { ok: false });
     if (request.method !== "POST") return send(response, 405, { ok: false });
     let user;
     try {
       const body = JSON.parse((await readBody(request)) || "{}");
       user = verifyInitData(body.initData);
+      if (path === "/api/crypto") {
+        if (body.action === "create") return send(response, 200, { ok: true, ...await createCryptoCheckout(user, body.plan) });
+        if (body.action === "status") return send(response, 200, { ok: true, ...await checkCryptoCheckout(user.id, String(body.transactionId || "")) });
+        return send(response, 400, { ok: false, message: "Unknown crypto action" });
+      }
       if (path === "/api/funnel") {
         await trackFunnelEvent(user.id, body.stage);
         return send(response, 200, { ok: true });
@@ -94,7 +110,7 @@ export function startDashboardApi({ port = Number(process.env.DASHBOARD_PORT) ||
     } catch (error) {
       if (!user) return send(response, 401, { ok: false, message: "Unauthorized" });
       console.error("Dashboard API failed", error);
-      return send(response, 500, { ok: false });
+      return send(response, 500, { ok: false, message: error.message || "Unable to process request" });
     }
   });
   server.listen(port, host, () => console.log(`Dashboard API listening on http://${host}:${port}`));

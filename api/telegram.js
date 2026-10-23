@@ -1,8 +1,10 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 const API = "https://api.telegram.org";
+const PLATEGA_API = "https://app.platega.io";
+const PLATEGA_CRYPTO_METHOD = 13;
 const APP_URL = (process.env.PUBLIC_APP_URL || "").replace(/\/$/, "");
 const BRAND = process.env.BOT_BRAND || "Ghost";
 const BOT_USERNAME = process.env.BOT_USERNAME || "ghostmsg_robot";
@@ -456,6 +458,116 @@ const planFromPayload = (payload) => {
 const subscriptionKeyFor = (userId, plan) => plan.scope === "groups" ? `group-subscription:${userId}` : `subscription:${userId}`;
 const durationMs = (days) => days * 24 * 60 * 60 * 1000;
 const expiryForPurchase = (current, plan) => plan.days ? Math.max(Date.now(), Number(current?.expiresAt) || 0) + durationMs(plan.days) : null;
+
+const cryptoPriceRub = (plan) => Math.round(plan.stars * 1.1);
+const cryptoOrderKey = (transactionId) => `crypto-order:${transactionId}`;
+const cryptoPaymentKey = (transactionId) => `payment:platega:${transactionId}`;
+const constantEqual = (left, right) => {
+  const a = Buffer.from(String(left || ""));
+  const b = Buffer.from(String(right || ""));
+  return a.length === b.length && timingSafeEqual(a, b);
+};
+
+async function plategaRequest(path, options = {}) {
+  const merchantId = process.env.PLATEGA_MERCHANT_ID;
+  const secret = process.env.PLATEGA_SECRET;
+  if (!merchantId || !secret) throw new Error("Криптооплата пока не настроена. Попробуйте позже.");
+  const response = await fetch(`${PLATEGA_API}${path}`, {
+    ...options,
+    headers: { "X-MerchantId": merchantId, "X-Secret": secret, "content-type": "application/json", ...(options.headers || {}) }
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.message || body.error || "Не удалось создать крипто-счёт.");
+  return body;
+}
+
+export async function createCryptoCheckout(user, planId) {
+  const plan = PLANS[planId];
+  if (!plan || plan.scope !== "personal") throw new Error("Этот тариф нельзя оплатить криптовалютой.");
+  if (!APP_URL) throw new Error("Адрес Mini App не настроен. Обратитесь в поддержку.");
+  const current = await personalSubscription(user.id);
+  if (current?.expiresAt === null && plan.days) throw new Error("У вас уже активен бессрочный тариф Ultra.");
+  const returnUrl = `${APP_URL}/app?screen=plans`;
+  const response = await plategaRequest("/transaction/process", {
+    method: "POST",
+    body: JSON.stringify({
+      paymentMethod: PLATEGA_CRYPTO_METHOD,
+      paymentDetails: { amount: cryptoPriceRub(plan), currency: "RUB" },
+      description: `Ghost ${plan.title}`,
+      return: returnUrl,
+      failedUrl: returnUrl,
+      payload: `ghost-crypto-${randomBytes(16).toString("hex")}`,
+      metadata: { userId: String(user.id), userName: user.username ? `@${user.username}` : undefined }
+    })
+  });
+  const transactionId = String(response.transactionId || response.id || "");
+  const paymentUrl = response.redirect || response.url;
+  if (!transactionId || !paymentUrl) throw new Error("Платёжный сервис не вернул ссылку на оплату.");
+  await put(cryptoOrderKey(transactionId), {
+    transactionId,
+    userId: String(user.id),
+    planId,
+    amount: cryptoPriceRub(plan),
+    currency: "RUB",
+    status: "PENDING",
+    createdAt: new Date().toISOString()
+  }, 60 * 60);
+  return { transactionId, paymentUrl, amount: cryptoPriceRub(plan), currency: "RUB" };
+}
+
+async function activateCryptoOrder(transactionId, transaction = {}) {
+  const order = await get(cryptoOrderKey(transactionId));
+  if (!order) return { kind: "unknown" };
+  const plan = PLANS[order.planId];
+  if (!plan || plan.scope !== "personal") throw new Error("У крипто-платежа неверный тариф.");
+  if (await get(cryptoPaymentKey(transactionId))) return { kind: "duplicate", order };
+  const amount = Number(transaction.amount ?? order.amount);
+  if (transaction.currency && transaction.currency !== order.currency || amount !== order.amount) {
+    await put(cryptoOrderKey(transactionId), { ...order, status: "needs_review", receivedAmount: transaction.amount, receivedCurrency: transaction.currency, reviewedAt: new Date().toISOString() }, null);
+    throw new Error("Сумма крипто-платежа не совпадает с тарифом.");
+  }
+  const key = subscriptionKeyFor(order.userId, plan);
+  const current = await get(key);
+  if (current?.expiresAt === null && plan.days) {
+    await put(cryptoOrderKey(transactionId), { ...order, status: "needs_review", reviewedAt: new Date().toISOString() }, null);
+    throw new Error("Нельзя применить временный тариф к бессрочному доступу.");
+  }
+  const expiresAt = expiryForPurchase(current, plan);
+  const record = { plan: plan.id, scope: plan.scope, groups: 0, expiresAt, chargeId: transactionId, purchasedAt: new Date().toISOString(), provider: "platega" };
+  const seconds = expiresAt ? Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000)) : null;
+  await put(key, record, seconds);
+  await put(cryptoPaymentKey(transactionId), { ...record, userId: Number(order.userId), amount: order.amount, currency: order.currency, status: "confirmed", transactionId }, null);
+  await addToSet("payments:ids", `platega:${transactionId}`);
+  await put(cryptoOrderKey(transactionId), { ...order, status: "CONFIRMED", confirmedAt: new Date().toISOString() }, null);
+  const language = (await get(`language:${order.userId}`))?.code || "ru";
+  const copy = LOCALE[language] || LOCALE.ru;
+  const until = plan.days ? ` до ${new Date(expiresAt).toLocaleDateString(language === "en" ? "en-GB" : "ru-RU")}` : (language === "en" ? " forever" : " навсегда");
+  await telegram("sendMessage", { chat_id: order.userId, text: language === "en" ? `✅ <b>${copy.payment}.</b>\n\nYour <b>${plan.title}</b> plan is ${copy.activated}${until}.` : `✅ <b>${copy.payment}.</b>\n\nТариф <b>${plan.title}</b> ${copy.activated}${until}.`, parse_mode: "HTML" }).catch(() => null);
+  const trial = await get(trialKey(order.userId));
+  if (trial?.status === "active") {
+    await put(trialKey(order.userId), { ...trial, status: "converted", convertedAt: Date.now() }, null);
+    await removeFromSet(trialActiveKey, order.userId);
+  }
+  await updateFunnel(order.userId, "payment_completed", { paidAt: Date.now(), plan: plan.id, provider: "platega" });
+  return { kind: "activated", order };
+}
+
+export async function processPlategaCallback(headers, transaction) {
+  if (!constantEqual(headers["x-merchantid"], process.env.PLATEGA_MERCHANT_ID) || !constantEqual(headers["x-secret"], process.env.PLATEGA_SECRET)) throw new Error("Неверная подпись Platega.");
+  const transactionId = String(transaction?.id || transaction?.transactionId || "");
+  if (!transactionId) throw new Error("Platega не передала ID транзакции.");
+  if (transaction.status !== "CONFIRMED") return { kind: "ignored", status: transaction.status || "unknown" };
+  return activateCryptoOrder(transactionId, transaction);
+}
+
+export async function checkCryptoCheckout(userId, transactionId) {
+  const order = await get(cryptoOrderKey(transactionId));
+  if (!order || String(order.userId) !== String(userId)) throw new Error("Крипто-счёт не найден.");
+  if (order.status === "CONFIRMED") return { status: "CONFIRMED" };
+  const transaction = await plategaRequest(`/transaction/${encodeURIComponent(transactionId)}`);
+  if (transaction.status === "CONFIRMED") await activateCryptoOrder(transactionId, transaction);
+  return { status: transaction.status || "PENDING" };
+}
 
 async function sendPaymentReviewAlert(message, plan) {
   const payment = message.successful_payment || {};
