@@ -760,15 +760,16 @@ async function registerReferralVisit(code, message) {
 
 const STARS_RUB_RATE = Number(process.env.STARS_RUB_RATE) || 1;
 
-// Stars paid per user over all time: { userId: { stars, lastAt } }.
+// Stars paid per user over all time: { userId: { stars, purchases, lastAt } }.
 async function paymentsByUser() {
   const byUser = {};
   for (const chargeId of await members("payments:ids")) {
     const payment = await get(`payment:${chargeId}`);
-    if (!payment?.userId || payment.currency !== "XTR") continue;
+    if (!payment?.userId || payment.currency !== "XTR" || payment.status === "needs_review") continue;
     const at = Date.parse(payment.purchasedAt) || 0;
-    const row = byUser[payment.userId] ||= { stars: 0, lastAt: 0 };
+    const row = byUser[payment.userId] ||= { stars: 0, purchases: 0, lastAt: 0 };
     row.stars += Number(payment.amount) || 0;
+    row.purchases++;
     row.lastAt = Math.max(row.lastAt, at);
   }
   return byUser;
@@ -795,14 +796,16 @@ async function referralStats(code, payments = null) {
   const event = (await get(`referral:${code}:events`)) || { clicks: 0 };
   const visitors = await members(`referral:${code}:visitors`);
   const paidBy = payments || await paymentsByUser();
-  const s = { premium: 0, trial: 0, caught: 0, events: 0, payers: 0, paidAfterTrial: 0, lockedNoPay: 0, stars: 0, subscribed: 0 };
+  const invalid = new Set((await members("users:invalid")).map(String));
+  const s = { premium: 0, inactive: 0, trial: 0, caught: 0, events: 0, payers: 0, purchases: 0, paidAfterTrial: 0, lockedNoPay: 0, stars: 0, subscribed: 0 };
   for (const id of visitors) {
     const record = await refUserRecord(id);
     const pay = paidBy[id];
     if (record.premium === true) s.premium++;
+    if (invalid.has(String(id))) s.inactive++;
     if (record.trialAt) s.trial++;
     if (record.events > 0) { s.caught++; s.events += record.events; }
-    if (pay) { s.payers++; s.stars += pay.stars; }
+    if (pay) { s.payers++; s.purchases += pay.purchases; s.stars += pay.stars; }
     if (record.trialAt && pay && pay.lastAt >= record.trialAt) s.paidAfterTrial++;
     if (record.locked > 0 && !pay) s.lockedNoPay++;
     if (await get(`subscription:${id}`)) s.subscribed++;
@@ -821,32 +824,31 @@ async function referralStats(code, payments = null) {
 
 function referralReport(stats, detailed = false) {
   if (!stats) return "Ссылка не найдена.";
+  const created = stats.createdAt ? ` · создана ${new Date(stats.createdAt).toLocaleDateString("ru-RU")}` : "";
+  const inactiveShare = share(stats.inactive, stats.unique);
   const rows = [
-    `<b>Рекламная ссылка: ${escapeHtml(stats.code)}</b>`,
-    detailed ? `Цена за пользователя: <b>${money(stats.price)}</b>` : null,
-    `Переходов: <b>${money(stats.clicks)}</b>`,
-    `Уникальных пользователей: <b>${money(stats.unique)}</b>`,
-    `Конверсия в оплату: <b>${stats.conversion.toFixed(1)}%</b>`,
-    `Итоговая стоимость: <b>${money(stats.totalCost)}</b>`
+    `<tg-emoji emoji-id="5413822103562524971">📢</tg-emoji> <b>${escapeHtml(stats.code)}</b>`,
+    `<i>${money(stats.price)} ₽ за пользователя${created}</i>`,
+    "",
+    `<tg-emoji emoji-id="5413740297320440148">👤</tg-emoji><b> Пользователи</b>`,
+    `  Переходов: <b>${money(stats.clicks)}</b>`,
+    `  Уникальных пользователей: <b>${money(stats.unique)}</b>`,
+    `  Неактивные: <b>${money(stats.inactive)}</b> (${inactiveShare}%)`,
+    `  С TG Premium: <b>${money(stats.premium)}</b>`,
+    "",
+    `<b><tg-emoji emoji-id="5411395283831527574">📊</tg-emoji></b> <b>Конверсия</b>`,
+    `  Подключили триал: <b>${money(stats.trial)}</b>`,
+    `  Поймали события: <b>${money(stats.caught)}</b>`,
+    `  Ср. событий на пользователя: <b>${stats.caught ? ruNumber(stats.eventsPerUser) : "0"}</b>`,
+    "",
+    `<b><tg-emoji emoji-id="5411209779899046667">⭐️</tg-emoji></b><b> Платежи</b>`,
+    `  Количество покупок: <b>${money(stats.purchases)}</b>`,
+    `  Донаты, рубли: <b>${money(Math.round(stats.revenue))} ₽</b>`,
+    "",
+    `<tg-emoji emoji-id="5339113303522161846">⚪️</tg-emoji> <b>Итого потрачено: ${money(Math.round(stats.totalCost))} ₽</b>`
   ];
-  if (detailed) {
-    rows.push(
-      "",
-      `С Telegram Premium: <b>${money(stats.premium)}</b>`,
-      `Подключили триал: <b>${money(stats.trial)}</b>`,
-      `Поймали событие: <b>${money(stats.caught)}</b>`,
-      `Событий на пользователя: <b>${stats.eventsPerUser.toFixed(1)}</b>`,
-      `Купили тариф: <b>${money(stats.payers)}</b> (сейчас с активной подпиской: ${money(stats.subscribed)})`,
-      `Подключились после триала: <b>${money(stats.paidAfterTrial)}</b>`,
-      `Не купили, но приходят скрытые события: <b>${money(stats.lockedNoPay)}</b>`,
-      `Стоимость платящего: <b>${stats.costPerPayer === null ? "—" : money(Math.round(stats.costPerPayer))}</b>`,
-      "",
-      `Доход: <b>${money(stats.stars)} ⭐</b> (≈ ${money(Math.round(stats.revenue))} ₽)`,
-      `Расход: <b>${money(stats.totalCost)} ₽</b>`,
-      `Итог: <b>${stats.result >= 0 ? "+" : "−"}${money(Math.abs(Math.round(stats.result)))} ₽</b>`
-    );
-  }
-  return rows.filter((row) => row !== null).join("\n");
+  if (detailed) rows.push("", `<b>Доход:</b> ${money(Math.round(stats.revenue))} ₽`, `<b>Маржа:</b> ${signedRub(stats.result)}`);
+  return rows.join("\n");
 }
 
 // Admin card for /ref_<link>: traffic, funnel with step conversion, money and result.
@@ -875,6 +877,7 @@ const resultIcon = (value) => (Math.round(value) > 0 ? CARD_EMOJI.plus : Math.ro
 
 function referralCard(stats, compact = false) {
   if (!stats) return "Ссылка не найдена.";
+  if (!compact) return referralReport(stats, true);
   const code = escapeHtml(stats.code);
   const roi = stats.totalCost ? ` · ROI ${stats.result >= 0 ? "+" : "−"}${money(Math.abs(Math.round(stats.result / stats.totalCost * 100)))}%` : "";
   const result = `${resultIcon(stats.result)} <b>Итог: ${signedRub(stats.result)}</b>${roi}`;
@@ -936,6 +939,7 @@ function adminKeyboard() {
   return { inline_keyboard: [
     [{ text: "📨 Рассылка", callback_data: "admin:broadcast" }, { text: "📊 Статистика", callback_data: "admin:stats" }],
     [{ text: "🔗 Рефералы", callback_data: "admin:referrals" }, { text: "👥 Пользователи", callback_data: "admin:users" }],
+    [{ text: "👑 Выдать VIP", callback_data: "admin:vip" }],
     [{ text: "🧹 Удалить невалидных", callback_data: "admin:purge" }],
     [{ text: "← Назад", callback_data: "admin:back" }]
   ] };
@@ -955,16 +959,30 @@ async function sendAdminPanel(chatId) {
 
 async function sendAdminStats(chatId) {
   const ids = await members("users:active");
-  const users = (await Promise.all(ids.map((id) => get(`user:${id}`)))).filter(Boolean);
-  const payments = (await Promise.all((await members("payments:ids")).map((id) => get(`payment:${id}`)))).filter(Boolean);
+  const [users, payments, invalidIds, trials, eventLists, referrals] = await Promise.all([
+    Promise.all(ids.map((id) => get(`user:${id}`))).then((items) => items.filter(Boolean)),
+    Promise.all((await members("payments:ids")).map((id) => get(`payment:${id}`))).then((items) => items.filter(Boolean)),
+    members("users:invalid"),
+    Promise.all(ids.map((id) => get(trialKey(id)))),
+    Promise.all(ids.map((id) => get(`events:${id}`))),
+    allReferralStats()
+  ]);
   const today = dateKey();
   const newToday = users.filter((user) => dateKey(user.joinedAt) === today).length;
-  const paidToday = payments.filter((payment) => dateKey(payment.purchasedAt) === today);
+  const confirmedPayments = payments.filter((payment) => payment.currency === "XTR" && payment.status !== "needs_review");
+  const paidToday = confirmedPayments.filter((payment) => dateKey(payment.purchasedAt) === today);
   const revenueToday = paidToday.reduce((total, payment) => total + (payment.amount || 0), 0);
-  const revenueAll = payments.reduce((total, payment) => total + (payment.amount || 0), 0);
-  const linked = (await members("business:enabled")).length;
+  const revenueAll = confirmedPayments.reduce((total, payment) => total + (payment.amount || 0), 0);
   const referralCodes = await members("referrals:codes");
-  const text = `<b>📊 Статистика Ghost — сегодня</b>\n━━━━━━━━━━━━\n\n<b>👥 Пользователи</b>\nНовых: <b>${money(newToday)}</b>\nДоступных для рассылки: <b>${money(users.length)}</b>\nПодключили автоматизацию: <b>${money(linked)}</b>\n\n<b>⭐ Платежи</b>\nСегодня: <b>${money(paidToday.length)}</b> (${money(revenueToday)} Stars)\nВсего: <b>${money(payments.length)}</b> (${money(revenueAll)} Stars)\nКонверсия в оплату: <b>${users.length ? (payments.length / users.length * 100).toFixed(1) : "0.0"}%</b>\n\n<b>🔗 Реклама</b>\nАктивных ссылок: <b>${money(referralCodes.length)}</b>`;
+  const inactive = new Set(invalidIds.map(String));
+  const trialCount = trials.filter(Boolean).length;
+  const caught = eventLists.filter((events) => Array.isArray(events) && events.length > 0).length;
+  const events = eventLists.reduce((total, list) => total + (Array.isArray(list) ? list.length : 0), 0);
+  const premium = users.filter((user) => user.isPremium).length;
+  const adSpend = referrals.reduce((total, referral) => total + referral.totalCost, 0);
+  const revenueRub = revenueAll * STARS_RUB_RATE;
+  const margin = revenueRub - adSpend;
+  const text = `<tg-emoji emoji-id="5413822103562524971">📢</tg-emoji><b> Статистика Ghost — сегодня</b>\n━━━━━━━━━━━━\n\n<tg-emoji emoji-id="5413740297320440148">👤</tg-emoji><b> Пользователи</b>\nНовых: <b>${money(newToday)}</b>\nНеактивные: <b>${money(inactive.size)}</b> (${share(inactive.size, users.length)}%)\nС TG Premium: <b>${money(premium)}</b>\nДоступных для рассылки: <b>${money(users.length)}</b>\n\n<b><tg-emoji emoji-id="5411395283831527574">📊</tg-emoji></b> <b>Конверсия</b>\n  Подключили триал: <b>${money(trialCount)}</b>\n  Сколько человек поймали события: <b>${money(caught)}</b>\n  Ср. событий на пользователя: <b>${caught ? ruNumber(events / caught) : "0"}</b>\n\n<b><tg-emoji emoji-id="5411209779899046667">⭐️</tg-emoji></b><b> Платежи</b>\nСегодня: <b>${money(paidToday.length)}</b> (${money(Math.round(revenueToday * STARS_RUB_RATE))} ₽)\nВсего: <b>${money(confirmedPayments.length)}</b> (${money(Math.round(revenueRub))} ₽)\nКонверсия в оплату: <b>${users.length ? (confirmedPayments.length / users.length * 100).toFixed(1) : "0.0"}%</b>\n\n<tg-emoji emoji-id="5411332955266127667">🔗</tg-emoji><b> Реклама</b>\nАктивных ссылок: <b>${money(referralCodes.length)}</b>\nРасходы на рекламу: <b>${money(Math.round(adSpend))} ₽</b>\n\n<b>Итого маржа:</b> <b>${signedRub(margin)}</b>\n<i>Доход ${money(Math.round(revenueRub))} ₽ − реклама ${money(Math.round(adSpend))} ₽</i>`;
   return telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "← Админ-панель", callback_data: "admin:back" }]] } });
 }
 
@@ -1089,6 +1107,31 @@ async function sendSettingsPrompt(chatId, ownerId = chatId) {
   });
 }
 
+const vipTargetFromMessage = (message) => {
+  const forwarded = message.forward_origin?.sender_user || message.forward_from || message.contact || message.reply_to_message?.from;
+  if (forwarded?.id) return { id: String(forwarded.id), name: [forwarded.first_name, forwarded.last_name].filter(Boolean).join(" ") || forwarded.username || null };
+  const rawId = String(message.text || "").trim();
+  return /^\d{5,20}$/.test(rawId) ? { id: rawId, name: null } : null;
+};
+
+async function grantVip(adminId, target, days) {
+  const key = `subscription:${target.id}`;
+  const current = await get(key);
+  if (current?.expiresAt === null) return { kind: "permanent" };
+  const expiresAt = Math.max(Date.now(), Number(current?.expiresAt) || 0) + durationMs(days);
+  const record = { plan: "vip", scope: "personal", groups: 0, expiresAt, grantedBy: String(adminId), grantedAt: new Date().toISOString() };
+  await put(key, record, Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000)));
+  await addToSet("vip:grants", target.id);
+  const trial = await get(trialKey(target.id));
+  if (trial?.status === "active") {
+    await put(trialKey(target.id), { ...trial, status: "vip", vipAt: Date.now() }, null);
+    await removeFromSet(trialActiveKey, target.id);
+  }
+  const until = new Date(expiresAt).toLocaleDateString("ru-RU");
+  await telegram("sendMessage", { chat_id: target.id, text: `👑 <b>VIP-доступ к Ghost активирован.</b>\n\nОн действует до ${until}.`, parse_mode: "HTML" }).catch(() => null);
+  return { kind: "granted", expiresAt };
+}
+
 async function commandHandler(message) {
   if (message.web_app_data?.data) {
     try {
@@ -1106,6 +1149,20 @@ async function commandHandler(message) {
   const command = rawCommand.toLowerCase().split("@")[0];
   const flow = message.from && isAdmin(message.from.id) ? await get(`admin:flow:${message.from.id}`) : null;
   if (flow && (!text || !text.startsWith("/"))) {
+    if (flow.type === "vip_target") {
+      const target = vipTargetFromMessage(message);
+      if (!target) return telegram("sendMessage", { chat_id: message.chat.id, text: "Не удалось определить пользователя. Перешлите любое его сообщение, отправьте контакт или пришлите числовой Telegram ID." });
+      await put(`admin:flow:${message.from.id}`, { type: "vip_days", target }, 15 * 60);
+      return telegram("sendMessage", { chat_id: message.chat.id, text: `Пользователь: <code>${target.id}</code>${target.name ? ` (${escapeHtml(target.name)})` : ""}.\n\nВведите число дней для VIP-доступа.`, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "Отмена", callback_data: "admin:vipcancel" }]] } });
+    }
+    if (flow.type === "vip_days") {
+      const days = Number(String(text).trim());
+      if (!Number.isInteger(days) || days < 1 || days > 36500) return telegram("sendMessage", { chat_id: message.chat.id, text: "Введите целое число от 1 до 36 500 дней." });
+      const result = await grantVip(message.from.id, flow.target, days);
+      await remove(`admin:flow:${message.from.id}`);
+      if (result.kind === "permanent") return telegram("sendMessage", { chat_id: message.chat.id, text: "У пользователя уже бессрочный Ultra-доступ. VIP не изменён.", reply_markup: adminKeyboard() });
+      return telegram("sendMessage", { chat_id: message.chat.id, text: `👑 VIP выдан пользователю <code>${flow.target.id}</code> на <b>${days}</b> дн.\nДоступ до <b>${new Date(result.expiresAt).toLocaleDateString("ru-RU")}</b>.`, parse_mode: "HTML", reply_markup: adminKeyboard() });
+    }
     if (flow.type === "broadcast_post") {
       const draft = {
         type: "broadcast_draft",
@@ -1213,6 +1270,14 @@ async function callbackHandler(callback) {
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
     if (suppliedId === "back") return sendAdminPanel(callback.message.chat.id);
     if (suppliedId === "stats") return sendAdminStats(callback.message.chat.id);
+    if (suppliedId === "vip") {
+      await put(`admin:flow:${callback.from.id}`, { type: "vip_target" }, 15 * 60);
+      return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Перешлите сообщение пользователя, отправьте его контакт или пришлите числовой Telegram ID. Затем Ghost спросит число дней для VIP.", reply_markup: { inline_keyboard: [[{ text: "Отмена", callback_data: "admin:vipcancel" }]] } });
+    }
+    if (suppliedId === "vipcancel") {
+      await remove(`admin:flow:${callback.from.id}`);
+      return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Выдача VIP отменена.", reply_markup: adminKeyboard() });
+    }
     if (suppliedId === "broadcast") {
       await put(`admin:flow:${callback.from.id}`, { type: "broadcast_post", buttons: [] }, 60 * 60);
       return telegram("sendMessage", {
