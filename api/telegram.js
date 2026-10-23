@@ -1026,6 +1026,43 @@ function referralCard(stats, compact = false) {
   return lines.join("\n");
 }
 
+// The /ref_<code> command is an internal admin view.  Keep its richer funnel
+// card separate from the public report and from the compact admin callbacks:
+// changing this presentation must never change /refssilkacheck output.
+function referralAdminCommandCard(stats) {
+  if (!stats) return "Ссылка не найдена.";
+  const code = escapeHtml(stats.code);
+  const created = stats.createdAt ? ` · создана ${new Date(stats.createdAt).toLocaleDateString("ru-RU")}` : "";
+  const head = [`${CARD_EMOJI.link} <b>${code}</b>`, `<i>${money(stats.price)} ₽ за пользователя${created}</i>`];
+  if (!stats.unique) return [...head, "", "Переходов пока не было."].join("\n");
+
+  const trialShare = share(stats.trial, stats.unique);
+  const caughtShare = share(stats.caught, stats.trial);
+  const paidShare = share(stats.payers, stats.caught || stats.unique);
+  const lines = [
+    ...head,
+    "",
+    `${CARD_EMOJI.traffic} <b>Трафик</b>`,
+    `<blockquote>Переходов: <b>${money(stats.clicks)}</b> · Уникальных: <b>${money(stats.unique)}</b> · С Telegram Premium: <b>${money(stats.premium)}</b> · ${share(stats.premium, stats.unique)}%</blockquote>`,
+    "🔻 <b>Воронка</b>",
+    `<blockquote>${bar(trialShare)} ${trialShare}% · Подключили триал: <b>${money(stats.trial)}</b>\n` +
+      `${bar(caughtShare)} ${caughtShare}% · Поймали событие: <b>${money(stats.caught)}</b>\n` +
+      `${bar(paidShare)} ${paidShare}% · Купили тариф: <b>${money(stats.payers)}</b>\n` +
+      `После триала: <b>${money(stats.paidAfterTrial)}</b> · сейчас активны: <b>${money(stats.subscribed)}</b> · Событий на человека: <b>${stats.caught ? ruNumber(stats.eventsPerUser) : "—"}</b></blockquote>`
+  ];
+  if (stats.lockedNoPay) {
+    lines.push(`${CARD_EMOJI.locked} Не купили, но идут события: <b>${money(stats.lockedNoPay)}</b>`, "<i>↳ тёплая аудитория для дожима</i>");
+  }
+  lines.push(
+    "",
+    `${CARD_EMOJI.money} <b>Деньги</b>`,
+    `<blockquote>Получено в инвойсах: <b>${money(stats.stars)} ⭐</b>\n` +
+      `Расход: <b>${money(stats.totalCost)} ₽</b> · Платящий: <b>${stats.costPerPayer === null ? "—" : `${money(Math.round(stats.costPerPayer))} ₽`}</b></blockquote>`,
+    "<i>Маржа и ROI не показываются: Ghost не знает фактическую выплату Telegram за Stars и комиссии.</i>"
+  );
+  return lines.join("\n");
+}
+
 function referralCardKeyboard(code, compact) {
   return { inline_keyboard: [
     [
@@ -1323,7 +1360,7 @@ async function commandHandler(message) {
     const code = fullRef[1].toLowerCase();
     const stats = await referralStats(code);
     return telegram("sendMessage", {
-      chat_id: message.chat.id, text: referralCard(stats), parse_mode: "HTML",
+      chat_id: message.chat.id, text: referralAdminCommandCard(stats), parse_mode: "HTML",
       ...(stats ? { reply_markup: referralCardKeyboard(code, false) } : {})
     });
   }
