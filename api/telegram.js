@@ -758,8 +758,6 @@ async function registerReferralVisit(code, message) {
   return referral;
 }
 
-const STARS_RUB_RATE = Number(process.env.STARS_RUB_RATE) || 1;
-
 // Stars paid per user over all time: { userId: { stars, purchases, lastAt } }.
 async function paymentsByUser() {
   const byUser = {};
@@ -812,13 +810,12 @@ async function referralStats(code, payments = null) {
   }
   const unique = visitors.length;
   const totalCost = unique * referral.price;
-  const revenue = s.stars * STARS_RUB_RATE;
   return {
     ...referral, ...s, clicks: event.clicks, unique, paid: s.payers,
     conversion: unique ? s.payers / unique * 100 : 0,
     eventsPerUser: s.caught ? s.events / s.caught : 0,
     costPerPayer: s.payers ? totalCost / s.payers : null,
-    totalCost, revenue, result: revenue - totalCost
+    totalCost
   };
 }
 
@@ -843,11 +840,11 @@ function referralReport(stats, detailed = false) {
     "",
     `<b><tg-emoji emoji-id="5411209779899046667">⭐️</tg-emoji></b><b> Платежи</b>`,
     `  Количество покупок: <b>${money(stats.purchases)}</b>`,
-    `  Донаты, рубли: <b>${money(Math.round(stats.revenue))} ₽</b>`,
+    `  Получено: <b>${money(stats.stars)} Stars</b>`,
     "",
     `<tg-emoji emoji-id="5339113303522161846">⚪️</tg-emoji> <b>Итого потрачено: ${money(Math.round(stats.totalCost))} ₽</b>`
   ];
-  if (detailed) rows.push("", `<b>Доход:</b> ${money(Math.round(stats.revenue))} ₽`, `<b>Маржа:</b> ${signedRub(stats.result)}`);
+  if (detailed) rows.push("", `<b>Расходы на рекламу:</b> ${money(Math.round(stats.totalCost))} ₽`, "<i>Рубли и маржа не рассчитываются: Ghost видит сумму инвойсов в Stars, но не баланс, комиссию и выплаты Telegram.</i>");
   return rows.join("\n");
 }
 
@@ -879,17 +876,15 @@ function referralCard(stats, compact = false) {
   if (!stats) return "Ссылка не найдена.";
   if (!compact) return referralReport(stats, true);
   const code = escapeHtml(stats.code);
-  const roi = stats.totalCost ? ` · ROI ${stats.result >= 0 ? "+" : "−"}${money(Math.abs(Math.round(stats.result / stats.totalCost * 100)))}%` : "";
-  const result = `${resultIcon(stats.result)} <b>Итог: ${signedRub(stats.result)}</b>${roi}`;
   if (compact) {
     return [
-      `${CARD_EMOJI.link} <b>${code}</b> — ${resultIcon(stats.result)} <b>${signedRub(stats.result)}</b>${roi}`,
+      `${CARD_EMOJI.link} <b>${code}</b>`,
       `${money(stats.unique)} чел. · ${money(stats.payers)} купили · ${stats.costPerPayer === null ? "—" : `${money(Math.round(stats.costPerPayer))} ₽`} за платящего`
     ].join("\n");
   }
   const created = stats.createdAt ? ` · создана ${new Date(stats.createdAt).toLocaleDateString("ru-RU")}` : "";
   const head = [`${CARD_EMOJI.link} <b>${code}</b>`, `<i>${money(stats.price)} ₽ за пользователя${created}</i>`];
-  if (!stats.unique) return [...head, "", "Переходов пока не было.", "", result].join("\n");
+  if (!stats.unique) return [...head, "", "Переходов пока не было."].join("\n");
   const trialShare = share(stats.trial, stats.unique);
   const caughtShare = share(stats.caught, stats.trial);
   const paidShare = share(stats.payers, stats.caught || stats.unique);
@@ -911,10 +906,10 @@ function referralCard(stats, compact = false) {
   }
   lines.push(
     `${CARD_EMOJI.money} <b>Деньги</b>`,
-    `<blockquote>Доход: <b>${money(stats.stars)} ⭐</b> ≈ ${money(Math.round(stats.revenue))} ₽\n` +
+    `<blockquote>Получено в инвойсах: <b>${money(stats.stars)} ⭐</b>\n` +
       `Расход: <b>${money(stats.totalCost)} ₽</b>\n` +
-      `Платящий: <b>${stats.costPerPayer === null ? "—" : `${money(Math.round(stats.costPerPayer))} ₽`}</b></blockquote>`,
-    result
+      `Платящий: <b>${stats.costPerPayer === null ? "—" : `${money(Math.round(stats.costPerPayer))} ₽`}</b>\n` +
+      `<i>Рубли и ROI не считаются: Ghost не видит фактические выплаты Telegram.</i></blockquote>`
   );
   return lines.join("\n");
 }
@@ -980,9 +975,7 @@ async function sendAdminStats(chatId) {
   const events = eventLists.reduce((total, list) => total + (Array.isArray(list) ? list.length : 0), 0);
   const premium = users.filter((user) => user.isPremium).length;
   const adSpend = referrals.reduce((total, referral) => total + referral.totalCost, 0);
-  const revenueRub = revenueAll * STARS_RUB_RATE;
-  const margin = revenueRub - adSpend;
-  const text = `<tg-emoji emoji-id="5413822103562524971">📢</tg-emoji><b> Статистика Ghost — сегодня</b>\n━━━━━━━━━━━━\n\n<tg-emoji emoji-id="5413740297320440148">👤</tg-emoji><b> Пользователи</b>\nНовых: <b>${money(newToday)}</b>\nНеактивные: <b>${money(inactive.size)}</b> (${share(inactive.size, users.length)}%)\nС TG Premium: <b>${money(premium)}</b>\nДоступных для рассылки: <b>${money(users.length)}</b>\n\n<b><tg-emoji emoji-id="5411395283831527574">📊</tg-emoji></b> <b>Конверсия</b>\n  Подключили триал: <b>${money(trialCount)}</b>\n  Сколько человек поймали события: <b>${money(caught)}</b>\n  Ср. событий на пользователя: <b>${caught ? ruNumber(events / caught) : "0"}</b>\n\n<b><tg-emoji emoji-id="5411209779899046667">⭐️</tg-emoji></b><b> Платежи</b>\nСегодня: <b>${money(paidToday.length)}</b> (${money(Math.round(revenueToday * STARS_RUB_RATE))} ₽)\nВсего: <b>${money(confirmedPayments.length)}</b> (${money(Math.round(revenueRub))} ₽)\nКонверсия в оплату: <b>${users.length ? (confirmedPayments.length / users.length * 100).toFixed(1) : "0.0"}%</b>\n\n<tg-emoji emoji-id="5411332955266127667">🔗</tg-emoji><b> Реклама</b>\nАктивных ссылок: <b>${money(referralCodes.length)}</b>\nРасходы на рекламу: <b>${money(Math.round(adSpend))} ₽</b>\n\n<b>Итого маржа:</b> <b>${signedRub(margin)}</b>\n<i>Доход ${money(Math.round(revenueRub))} ₽ − реклама ${money(Math.round(adSpend))} ₽</i>`;
+  const text = `<tg-emoji emoji-id="5413822103562524971">📢</tg-emoji><b> Статистика Ghost — сегодня</b>\n━━━━━━━━━━━━\n\n<tg-emoji emoji-id="5413740297320440148">👤</tg-emoji><b> Пользователи</b>\nНовых: <b>${money(newToday)}</b>\nНеактивные: <b>${money(inactive.size)}</b> (${share(inactive.size, users.length)}%)\nС TG Premium: <b>${money(premium)}</b>\nДоступных для рассылки: <b>${money(users.length)}</b>\n\n<b><tg-emoji emoji-id="5411395283831527574">📊</tg-emoji></b> <b>Конверсия</b>\n  Подключили триал: <b>${money(trialCount)}</b>\n  Сколько человек поймали события: <b>${money(caught)}</b>\n  Ср. событий на пользователя: <b>${caught ? ruNumber(events / caught) : "0"}</b>\n\n<b><tg-emoji emoji-id="5411209779899046667">⭐️</tg-emoji></b><b> Платежи</b>\nСегодня: <b>${money(paidToday.length)}</b> (${money(revenueToday)} Stars)\nВсего: <b>${money(confirmedPayments.length)}</b> (${money(revenueAll)} Stars)\nКонверсия в оплату: <b>${users.length ? (confirmedPayments.length / users.length * 100).toFixed(1) : "0.0"}%</b>\n\n<tg-emoji emoji-id="5411332955266127667">🔗</tg-emoji><b> Реклама</b>\nАктивных ссылок: <b>${money(referralCodes.length)}</b>\nРасходы на рекламу: <b>${money(Math.round(adSpend))} ₽</b>\n\n<b>Финансовый итог:</b> <b>не рассчитан</b>\n<i>Ghost не видит баланс Stars, комиссию Telegram и фактические выплаты. Stars в инвойсах — не рублёвый доход.</i>`;
   return telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "← Админ-панель", callback_data: "admin:back" }]] } });
 }
 
