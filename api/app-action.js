@@ -96,7 +96,7 @@ export default async function handler(request, response) {
       const invoiceUrl = await telegram("createInvoiceLink", {
         title: plan.title,
         description,
-        payload: `ghost-plan:${request.body.plan}`,
+        payload: `ghost-plan:${request.body.plan}:${plan.stars}`,
         currency: "XTR",
         prices: [{ label, amount: plan.stars }]
       });

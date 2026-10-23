@@ -248,7 +248,7 @@ async function trackRefUser(userId, update) {
 }
 
 const senderName = (message) => [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") || "Собеседник";
-const notifyOwner = (chatId, text) => telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML" });
+const notifyOwner = (chatId, text) => telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } });
 
 const trialKey = (ownerId) => `trial:${ownerId}`;
 const lockedEventsKey = (ownerId) => `locked-events:${ownerId}`;
@@ -446,18 +446,55 @@ export async function runFunnelAutomation() {
 }
 
 const planFromPayload = (payload) => {
-  const [, planId] = String(payload || "").split(":");
-  return PLANS[planId] ? { id: planId, ...PLANS[planId] } : null;
+  const [, planId, issuedAmount] = String(payload || "").split(":");
+  const plan = PLANS[planId];
+  if (!plan) return null;
+  const amount = Number(issuedAmount);
+  return { id: planId, ...plan, issuedStars: Number.isSafeInteger(amount) && amount > 0 ? amount : plan.stars };
 };
+
+const subscriptionKeyFor = (userId, plan) => plan.scope === "groups" ? `group-subscription:${userId}` : `subscription:${userId}`;
+const durationMs = (days) => days * 24 * 60 * 60 * 1000;
+const expiryForPurchase = (current, plan) => plan.days ? Math.max(Date.now(), Number(current?.expiresAt) || 0) + durationMs(plan.days) : null;
+
+async function sendPaymentReviewAlert(message, plan) {
+  const payment = message.successful_payment || {};
+  const chargeId = payment.telegram_payment_charge_id;
+  if (!chargeId || await get(`payment:${chargeId}`)) return;
+  const record = {
+    status: "needs_review",
+    userId: message.from?.id,
+    plan: plan?.id || null,
+    expectedAmount: plan?.issuedStars || null,
+    amount: payment.total_amount ?? null,
+    currency: payment.currency || null,
+    chargeId,
+    receivedAt: new Date().toISOString()
+  };
+  await put(`payment:${chargeId}`, record, null);
+  await addToSet("payments:ids", chargeId);
+  await addToSet("payments:needs_review", chargeId);
+  const userText = "⚠️ Платёж получен, но Ghost не смог автоматически подтвердить выбранный тариф. Не оплачивайте повторно — команда уже получила уведомление и проверит платёж вручную.";
+  if (message.chat?.id) await telegram("sendMessage", { chat_id: message.chat.id, text: userText });
+  const planLabel = plan?.title || "неизвестный тариф";
+  const adminText = `⚠️ <b>Платёж Ghost требует проверки</b>\n\nПользователь: <code>${message.from?.id || "—"}</code>\nТариф: <b>${escapeHtml(planLabel)}</b>\nПолучено: <b>${payment.total_amount ?? "—"} ${escapeHtml(payment.currency || "")}</b>\nОжидалось: <b>${plan?.issuedStars ?? "—"} Stars</b>\nCharge ID: <code>${escapeHtml(chargeId)}</code>`;
+  await Promise.all([...ADMIN_IDS].map((adminId) => telegram("sendMessage", { chat_id: adminId, text: adminText, parse_mode: "HTML" }).catch(() => null)));
+}
 
 async function sendStarsInvoice(chatId, planId) {
   const plan = PLANS[planId];
   if (!plan) throw new Error("Unknown plan");
+  if (plan.scope === "personal") {
+    const current = await personalSubscription(chatId);
+    if (current && current.expiresAt === null && plan.days) {
+      return telegram("sendMessage", { chat_id: chatId, text: "У вас уже активен бессрочный тариф Ultra. Дополнительная подписка не требуется." });
+    }
+  }
   return telegram("sendInvoice", {
     chat_id: chatId,
     title: `${BRAND} ${plan.title}`,
     description: plan.days ? `Доступ к Ghost на ${plan.days === 365 ? "1 год" : `${plan.days} ${plan.days === 7 ? "дней" : "дней"}`}.` : "Постоянный доступ к Ghost.",
-    payload: `ghost-plan:${planId}`,
+    payload: `ghost-plan:${planId}:${plan.stars}`,
     currency: "XTR",
     prices: [{ label: `${plan.title} — Ghost`, amount: plan.stars }],
     start_parameter: `buy_${planId}`
@@ -467,11 +504,15 @@ async function sendStarsInvoice(chatId, planId) {
 async function completeStarsPayment(message) {
   const payment = message.successful_payment;
   const plan = planFromPayload(payment.invoice_payload);
-  if (!plan || payment.currency !== "XTR" || payment.total_amount !== plan.stars) return;
-  const expiresAt = plan.days ? Date.now() + plan.days * 24 * 60 * 60 * 1000 : null;
+  if (!plan || payment.currency !== "XTR" || payment.total_amount !== plan.issuedStars) return sendPaymentReviewAlert(message, plan);
+  if (await get(`payment:${payment.telegram_payment_charge_id}`)) return;
+  const subscriptionKey = subscriptionKeyFor(message.from.id, plan);
+  const current = await get(subscriptionKey);
+  if (plan.scope === "personal" && current?.expiresAt === null && plan.days) return sendPaymentReviewAlert(message, plan);
+  const expiresAt = expiryForPurchase(current, plan);
   const record = { plan: plan.id, scope: plan.scope, groups: plan.groups || 0, expiresAt, chargeId: payment.telegram_payment_charge_id, purchasedAt: new Date().toISOString() };
-  const subscriptionKey = plan.scope === "groups" ? `group-subscription:${message.from.id}` : `subscription:${message.from.id}`;
-  await put(subscriptionKey, record, plan.days ? plan.days * 24 * 60 * 60 : null);
+  const seconds = expiresAt ? Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000)) : null;
+  await put(subscriptionKey, record, seconds);
   await put(`payment:${payment.telegram_payment_charge_id}`, { ...record, userId: message.from.id, amount: payment.total_amount, currency: payment.currency }, null);
   await addToSet("payments:ids", payment.telegram_payment_charge_id);
   const language = (await get(`language:${message.from.id}`))?.code || "ru";
@@ -1358,10 +1399,12 @@ export async function processUpdate(update) {
   if (update.callback_query) await callbackHandler(update.callback_query);
   if (update.pre_checkout_query) {
     const plan = planFromPayload(update.pre_checkout_query.invoice_payload);
-    const valid = plan && update.pre_checkout_query.currency === "XTR" && update.pre_checkout_query.total_amount === plan.stars;
+    const current = plan ? await get(subscriptionKeyFor(update.pre_checkout_query.from.id, plan)) : null;
+    const hasPermanentAccess = plan?.scope === "personal" && current?.expiresAt === null && plan.days;
+    const valid = plan && update.pre_checkout_query.currency === "XTR" && update.pre_checkout_query.total_amount === plan.issuedStars && !hasPermanentAccess;
     await telegram("answerPreCheckoutQuery", valid
       ? { pre_checkout_query_id: update.pre_checkout_query.id, ok: true }
-      : { pre_checkout_query_id: update.pre_checkout_query.id, ok: false, error_message: "Не удалось проверить выбранный тариф. Откройте Ghost и попробуйте ещё раз." });
+      : { pre_checkout_query_id: update.pre_checkout_query.id, ok: false, error_message: hasPermanentAccess ? "У вас уже активен бессрочный тариф Ultra." : "Не удалось проверить выбранный тариф. Откройте Ghost и попробуйте ещё раз." });
   }
   if (update.business_connection) await storeConnection(update.business_connection);
   if (update.business_message) await saveBusinessMessage(update.business_message);
