@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from "node:crypto";
+import { renameSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -135,44 +136,136 @@ const unseal = (value) => {
   return JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8"));
 };
 
-// The file backend is used on the VPS. Serialize access inside the process:
-// a GET from long-polling and a scheduled funnel write may otherwise try to
-// replace the same temporary file at once and corrupt the JSON store.
-const localStoreOnce = async (command) => {
+// The file backend is used on the VPS. The whole store is kept in memory: it is read
+// from disk once and written back at most once per STORE_FLUSH_DELAY_MS after a change
+// (and immediately on shutdown via flushStoreSync). Reading and rewriting the full JSON
+// file on every command made every operation wait for disk I/O and queue behind others.
+// Only this process may write the file while it runs.
+const STORE_FLUSH_DELAY_MS = 1000;
+let memoryStore = null;
+let storeLoading = null;
+let storeDirty = false;
+let flushTimer = null;
+let flushChain = Promise.resolve();
+
+const storeFile = () => {
   const file = process.env.LOCAL_DATA_FILE;
   if (!file) throw new Error("Vercel KV or LOCAL_DATA_FILE must be configured");
-  await mkdir(dirname(file), { recursive: true });
-  let store = { strings: {}, sets: {} };
-  try { store = JSON.parse(await readFile(file, "utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
-  const now = Date.now();
-  for (const [key, record] of Object.entries(store.strings)) if (record.expiresAt && record.expiresAt < now) delete store.strings[key];
-  for (const [key, record] of Object.entries(store.sets)) if (record.expiresAt && record.expiresAt < now) delete store.sets[key];
+  return file;
+};
+
+async function loadStore() {
+  if (memoryStore) return memoryStore;
+  storeLoading ||= (async () => {
+    const file = storeFile();
+    await mkdir(dirname(file), { recursive: true });
+    let store = { strings: {}, sets: {} };
+    try { store = JSON.parse(await readFile(file, "utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    store.strings ||= {};
+    store.sets ||= {};
+    memoryStore = store;
+    return store;
+  })().finally(() => { storeLoading = null; });
+  return storeLoading;
+}
+
+const isExpired = (record, now) => Boolean(record?.expiresAt && record.expiresAt < now);
+function purgeExpired(store, now) {
+  for (const [key, record] of Object.entries(store.strings)) if (isExpired(record, now)) delete store.strings[key];
+  for (const [key, record] of Object.entries(store.sets)) if (isExpired(record, now)) delete store.sets[key];
+}
+// Live (non-expired) records only; an expired one is dropped on access.
+function liveString(store, key, now) {
+  const record = store.strings[key];
+  if (isExpired(record, now)) { delete store.strings[key]; storeDirty = true; return undefined; }
+  return record;
+}
+function liveSet(store, key, now) {
+  const record = store.sets[key];
+  if (isExpired(record, now)) { delete store.sets[key]; storeDirty = true; return undefined; }
+  return record;
+}
+
+function applyCommand(store, command, now) {
   const [verb, ...args] = command;
-  let result = null;
+  if (verb === "GET") return liveString(store, args[0], now)?.value || null;
+  if (verb === "SMEMBERS") return [...(liveSet(store, args[0], now)?.members || [])];
+  storeDirty = true;
   if (verb === "SET") {
     const [key, value, , seconds] = args;
     store.strings[key] = { value, expiresAt: Number(seconds) ? now + Number(seconds) * 1000 : null };
-    result = "OK";
-  } else if (verb === "GET") result = store.strings[args[0]]?.value || null;
-  else if (verb === "DEL") { result = 0; for (const key of args) { if (delete store.strings[key]) result++; if (delete store.sets[key]) result++; } }
-  else if (verb === "SADD") { const [key, ...values] = args; const current = new Set(store.sets[key]?.members || []); values.forEach((value) => current.add(value)); store.sets[key] = { members: [...current], expiresAt: store.sets[key]?.expiresAt || null }; result = current.size; }
-  else if (verb === "SREM") { const [key, ...values] = args; const current = new Set(store.sets[key]?.members || []); let removed = 0; values.forEach((value) => { if (current.delete(value)) removed++; }); if (store.sets[key]) store.sets[key].members = [...current]; result = removed; }
-  else if (verb === "SMEMBERS") result = store.sets[args[0]]?.members || [];
-  else if (verb === "EXPIRE") { const [key, seconds] = args; const record = store.strings[key] || store.sets[key]; if (record) record.expiresAt = now + Number(seconds) * 1000; result = record ? 1 : 0; }
-  else throw new Error(`Unsupported local storage command: ${verb}`);
-  const temporary = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-  await writeFile(temporary, JSON.stringify(store), { mode: 0o600 });
-  await rename(temporary, file);
-  return result;
-};
+    return "OK";
+  }
+  if (verb === "DEL") { let removed = 0; for (const key of args) { if (delete store.strings[key]) removed++; if (delete store.sets[key]) removed++; } return removed; }
+  if (verb === "SADD") {
+    const [key, ...values] = args;
+    const previous = liveSet(store, key, now);
+    const current = new Set(previous?.members || []);
+    values.forEach((value) => current.add(value));
+    store.sets[key] = { members: [...current], expiresAt: previous?.expiresAt || null };
+    return current.size;
+  }
+  if (verb === "SREM") {
+    const [key, ...values] = args;
+    const record = liveSet(store, key, now);
+    if (!record) return 0;
+    const current = new Set(record.members);
+    let removed = 0;
+    values.forEach((value) => { if (current.delete(value)) removed++; });
+    record.members = [...current];
+    return removed;
+  }
+  if (verb === "EXPIRE") {
+    const [key, seconds] = args;
+    const record = liveString(store, key, now) || liveSet(store, key, now);
+    if (record) record.expiresAt = now + Number(seconds) * 1000;
+    return record ? 1 : 0;
+  }
+  throw new Error(`Unsupported local storage command: ${verb}`);
+}
 
-let localStoreQueue = Promise.resolve();
-const localStore = (command) => {
-  const task = localStoreQueue.then(() => localStoreOnce(command));
-  // Keep later commands available after a failed read/write while returning the
-  // original failure to the caller that triggered it.
-  localStoreQueue = task.catch(() => undefined);
-  return task;
+async function flushStore() {
+  if (!memoryStore || !storeDirty) return;
+  storeDirty = false;
+  purgeExpired(memoryStore, Date.now());
+  const file = storeFile();
+  const temporary = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(memoryStore), { mode: 0o600 });
+    await rename(temporary, file);
+  } catch (error) {
+    storeDirty = true; // keep the changes for the next attempt
+    throw error;
+  }
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushChain = flushChain.then(flushStore).catch((error) => {
+      console.error("Store flush failed", error);
+      scheduleFlush();
+    });
+  }, STORE_FLUSH_DELAY_MS);
+}
+
+// Synchronous final write for process shutdown (SIGINT/SIGTERM from PM2).
+export function flushStoreSync() {
+  if (!memoryStore || !storeDirty) return;
+  purgeExpired(memoryStore, Date.now());
+  const file = storeFile();
+  const temporary = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+  writeFileSync(temporary, JSON.stringify(memoryStore), { mode: 0o600 });
+  renameSync(temporary, file);
+  storeDirty = false;
+}
+
+const localStore = async (command) => {
+  const store = await loadStore();
+  const result = applyCommand(store, command, Date.now());
+  if (storeDirty) scheduleFlush();
+  return result;
 };
 
 const kvRequest = async (command) => {
@@ -388,33 +481,64 @@ async function deliverLockedEvents(ownerId, chatId) {
   await remove(key);
 }
 
-async function activateTrialsForConnectedUsers() {
-  for (const rawId of await members("business:enabled")) {
+// A user who blocked the bot (or deleted the account) can never receive a nudge again.
+const isUnreachableError = (error) => /blocked|deactivated|chat not found|forbidden/i.test(String(error?.message));
+
+async function markUnreachable(ownerId) {
+  await removeFromSet(funnelPendingKey, ownerId);
+  await addToSet("users:invalid", ownerId);
+}
+
+// Runs `work` for every owner on its own, so one failing user never stops the whole pass.
+async function forEachOwner(ids, label, work) {
+  for (const rawId of ids) {
     const ownerId = String(rawId);
-    if (await personalSubscription(ownerId) || await get(trialKey(ownerId))) continue;
+    try {
+      await work(ownerId);
+    } catch (error) {
+      if (isUnreachableError(error)) await markUnreachable(ownerId);
+      else console.error(`${label} failed for ${ownerId}`, error);
+    }
+  }
+}
+
+async function activateTrialsForConnectedUsers() {
+  await forEachOwner(await members("business:enabled"), "Trial activation", async (ownerId) => {
+    if (await personalSubscription(ownerId) || await get(trialKey(ownerId))) return;
     const keys = await members(`owner:${ownerId}:keys`);
     const connectionKey = keys.find((key) => key.startsWith("connection:"));
     const connection = connectionKey ? await get(connectionKey) : null;
-    if (!connection?.enabled) continue;
+    if (!connection?.enabled) return;
     const trial = await startTrial(connection);
-    if (!trial) continue;
+    if (!trial) return;
     await telegram("sendMessage", {
       chat_id: trial.userChatId || ownerId,
       parse_mode: "HTML",
       text: `🎁 <b>Для вас активирован бесплатный пробный период на 3 дня.</b>\n\nДо ${new Date(trial.endsAt).toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" })} Ghost будет показывать содержимое новых доступных событий.`
     });
+  });
+}
+
+// The runner calls this every 15 s; a pass that is still running is not started again.
+let funnelRunning = false;
+export async function runFunnelAutomation() {
+  if (funnelRunning) return;
+  funnelRunning = true;
+  try {
+    await funnelPass();
+  } finally {
+    funnelRunning = false;
   }
 }
 
-export async function runFunnelAutomation() {
+async function funnelPass() {
   const now = Date.now();
   await activateTrialsForConnectedUsers();
-  for (const rawId of await members(funnelPendingKey)) {
-    const ownerId = String(rawId);
+  await forEachOwner(await members(funnelPendingKey), "Funnel nudge", async (ownerId) => {
     const funnel = await get(funnelKey(ownerId));
     if (!funnel?.startedAt || funnel.connectedAt || await personalSubscription(ownerId)) {
       await removeFromSet(funnelPendingKey, ownerId);
-      continue;
+      return;
     }
     const reminders = funnel.reminders || {};
     if (!reminders.first && now - funnel.startedAt >= FIRST_NUDGE_DELAY_MS) {
@@ -424,7 +548,7 @@ export async function runFunnelAutomation() {
         reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", callback_data: "connect" }]] }
       });
       await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, first: now } }, null);
-      continue;
+      return;
     }
     if (!reminders.safety && now - funnel.startedAt >= SAFETY_NUDGE_DELAY_MS) {
       await telegram("sendMessage", {
@@ -435,16 +559,15 @@ export async function runFunnelAutomation() {
       await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, safety: now } }, null);
       await removeFromSet(funnelPendingKey, ownerId);
     }
-  }
-  for (const rawId of await members(trialActiveKey)) {
-    const ownerId = String(rawId);
+  });
+  await forEachOwner(await members(trialActiveKey), "Trial finish", async (ownerId) => {
     const trial = await get(trialKey(ownerId));
     if (!trial || trial.status !== "active") {
       await removeFromSet(trialActiveKey, ownerId);
-      continue;
+      return;
     }
     if (now >= trial.endsAt) await finishTrial(ownerId, trial);
-  }
+  });
 }
 
 const planFromPayload = (payload) => {

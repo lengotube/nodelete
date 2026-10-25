@@ -1,5 +1,5 @@
 /** VPS runner: receives Telegram updates by long polling; no public webhook is needed. */
-import { processUpdate, runFunnelAutomation } from "../api/telegram.js";
+import { flushStoreSync, processUpdate, runFunnelAutomation } from "../api/telegram.js";
 import { startDashboardApi } from "./dashboard-api.js";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -9,7 +9,15 @@ let offset = 0;
 let stopping = false;
 let dashboard = null;
 let funnelTimer = null;
-const stop = () => { stopping = true; dashboard?.close(); if (funnelTimer) clearInterval(funnelTimer); };
+// The store lives in memory and is written to disk shortly after changes; on shutdown
+// write it right away, then exit (PM2 would kill a still-polling process anyway).
+const stop = () => {
+  stopping = true;
+  dashboard?.close();
+  if (funnelTimer) clearInterval(funnelTimer);
+  try { flushStoreSync(); } catch (error) { console.error("Final store flush failed", error); }
+  process.exit(0);
+};
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
