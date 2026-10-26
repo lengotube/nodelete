@@ -15,7 +15,7 @@ const PRIVACY_URL = process.env.PRIVACY_URL || "https://telegra.ph/Politika-konf
 const ADMIN_IDS = new Set((process.env.ADMIN_IDS || "7822690557").split(",").map((id) => id.trim()).filter(Boolean));
 const RETENTION_SECONDS = 90 * 24 * 60 * 60;
 const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000;
-const FIRST_NUDGE_DELAY_MS = 15 * 1000;
+const FIRST_NUDGE_DELAY_MS = 5 * 60 * 1000;
 const FIRST_DEMO_DELAY_MS = 24 * 60 * 60 * 1000;
 const SECOND_DEMO_DELAY_MS = 48 * 60 * 60 * 1000;
 const PAYWALL_NUDGE_DELAY_MS = 6 * 60 * 60 * 1000;
