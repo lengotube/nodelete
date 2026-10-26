@@ -3,6 +3,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 const API = "https://api.telegram.org";
 const BRAND = process.env.BOT_BRAND || "Ghost";
 const SUPPORT_URL = process.env.SUPPORT_URL || "https://t.me/ghostmsg_support_bot?start=help";
+const GUIDE_ASSETS_CHAT_ID = process.env.GUIDE_ASSETS_CHAT_ID || "-1004319974246";
+const GUIDE_VIDEO_MESSAGE_ID = Number(process.env.GUIDE_VIDEO_MESSAGE_ID || 2);
 const STARS_PLANS = {
   lite: { title: "Ghost Lite", stars: 180, description: "Доступ к Ghost на 7 дней." },
   plus: { title: "Ghost Plus", stars: 360, description: "Доступ к Ghost на 30 дней." },
@@ -29,6 +31,8 @@ const settingsText = (username) => `
 <tg-emoji emoji-id="5793901252987330401">4⃣</tg-emoji> Вставь username <b>${BRAND}</b>
 <code>@${username}</code>
 и нажми <b>Добавить</b>
+
+<blockquote><tg-emoji emoji-id="5881702736843511327">⚠️</tg-emoji> До подключения события теряются навсегда.</blockquote>
 `.trim();
 
 function verifiedUser(initData) {
@@ -75,6 +79,11 @@ export default async function handler(request, response) {
     const { action, initData } = request.body || {};
     const user = verifiedUser(initData);
     if (action === "settings") {
+      await telegram("copyMessage", {
+        chat_id: user.id,
+        from_chat_id: GUIDE_ASSETS_CHAT_ID,
+        message_id: GUIDE_VIDEO_MESSAGE_ID
+      }).catch((error) => console.error("Guide video copy failed", error));
       await telegram("sendMessage", {
         chat_id: user.id,
         text: settingsText(process.env.BOT_USERNAME || "ghostmsg_robot"),

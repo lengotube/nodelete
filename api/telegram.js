@@ -16,9 +16,13 @@ const ADMIN_IDS = new Set((process.env.ADMIN_IDS || "7822690557").split(",").map
 const RETENTION_SECONDS = 90 * 24 * 60 * 60;
 const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000;
 const FIRST_NUDGE_DELAY_MS = 15 * 1000;
-const SAFETY_NUDGE_DELAY_MS = 24 * 60 * 60 * 1000;
+const FIRST_DEMO_DELAY_MS = 24 * 60 * 60 * 1000;
+const SECOND_DEMO_DELAY_MS = 48 * 60 * 60 * 1000;
 const PAYWALL_NUDGE_DELAY_MS = 6 * 60 * 60 * 1000;
 const TRIAL_FORECAST_DAYS = 30;
+const GUIDE_ASSETS_CHAT_ID = process.env.GUIDE_ASSETS_CHAT_ID || "-1004319974246";
+const GUIDE_VIDEO_MESSAGE_ID = Number(process.env.GUIDE_VIDEO_MESSAGE_ID || 2);
+const SETTINGS_IMAGE_MESSAGE_ID = Number(process.env.SETTINGS_IMAGE_MESSAGE_ID || 3);
 const PLANS = {
   lite: { title: "Lite", stars: 180, days: 7, scope: "personal" },
   plus: { title: "Plus", stars: 360, days: 30, scope: "personal" },
@@ -106,7 +110,11 @@ const keyboard = (language = "ru") => {
   const copy = LOCALE[language] || LOCALE.ru;
   return ({
   inline_keyboard: [
-    [{ text: copy.connect, icon_custom_emoji_id: "5411465691230411357", web_app: { url: appLink("connect") || botLink } }],
+    [{ text: "Открыть Mini App", icon_custom_emoji_id: "5411465691230411357", web_app: { url: appLink("connect") || botLink } }],
+    [
+      { text: "⚙️ Настройки", callback_data: "settings" },
+      { text: "📖 Инструкция", callback_data: "guide" }
+    ],
     [
       { text: copy.support, icon_custom_emoji_id: "5411350246804461567", url: SUPPORT_URL || process.env.COMMUNITY_URL || botLink },
       { text: copy.language, icon_custom_emoji_id: "5224450179368767019", callback_data: "language" }
@@ -314,6 +322,20 @@ const messagePreview = (message) => {
   return "Сообщение без текстового содержимого";
 };
 
+// Telegram exposes spoiler-covered media to a connected business bot with a regular
+// file_id and the has_media_spoiler marker. Store only that Telegram file reference;
+// bytes never pass through or live on the Ghost server.
+const spoilerMediaSnapshot = (message) => {
+  if (!message?.has_media_spoiler) return null;
+  if (Array.isArray(message.photo) && message.photo.length) return { kind: "photo", fileId: message.photo.at(-1).file_id };
+  if (message.video?.file_id) return { kind: "video", fileId: message.video.file_id };
+  if (message.animation?.file_id) return { kind: "animation", fileId: message.animation.file_id };
+  if (message.document?.file_id) return { kind: "document", fileId: message.document.file_id, name: message.document.file_name || null };
+  return null;
+};
+
+const isLiveLocationUpdate = (message) => Boolean(message?.location && Number(message.location.live_period) > 0);
+
 const chatTitle = (chat) => chat?.title || [chat?.first_name, chat?.last_name].filter(Boolean).join(" ") || null;
 const EVENT_LIMIT = 200;
 const clip = (value, size = 500) => { const text = String(value ?? ""); return text.length > size ? `${text.slice(0, size)}…` : text; };
@@ -345,12 +367,59 @@ async function trackRefUser(userId, update) {
 const senderName = (message) => [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") || "Собеседник";
 const notifyOwner = (chatId, text) => telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } });
 
+async function sendSavedSpoilerMedia(chatId, media) {
+  if (!media?.fileId) return;
+  const methodByKind = { photo: "sendPhoto", video: "sendVideo", animation: "sendAnimation", document: "sendDocument" };
+  const fieldByKind = { photo: "photo", video: "video", animation: "animation", document: "document" };
+  const method = methodByKind[media.kind];
+  const field = fieldByKind[media.kind];
+  if (!method || !field) return;
+  await telegram(method, {
+    chat_id: chatId,
+    [field]: media.fileId,
+    caption: "<b>Скрытое медиа, сохранённое Ghost</b>",
+    parse_mode: "HTML"
+  }).catch((error) => console.error("Saved spoiler media delivery failed", error));
+}
+
+async function notifyEventWithMedia(connection, event, text) {
+  await notifyOwner(connection.userChatId, text);
+  const settings = await userSettings(connection.ownerId);
+  if (settings.saveSpoilerMedia && settings.sendSpoilerMedia && event.hiddenMedia) {
+    await sendSavedSpoilerMedia(connection.userChatId, event.hiddenMedia);
+  }
+}
+
 const trialKey = (ownerId) => `trial:${ownerId}`;
 const lockedEventsKey = (ownerId) => `locked-events:${ownerId}`;
 const funnelKey = (ownerId) => `funnel:${ownerId}`;
 const funnelPendingKey = "funnel:pending";
 const trialActiveKey = "trials:active";
 const planKeyboard = () => ({ inline_keyboard: [[{ text: "⭐ Выбрать тариф", web_app: { url: appLink("plans") || botLink } }]] });
+const userSettingsKey = (ownerId) => `settings:${ownerId}`;
+const DEFAULT_USER_SETTINGS = Object.freeze({
+  notifications: true,
+  saveSpoilerMedia: true,
+  notifyEdited: true,
+  notifyDeleted: true,
+  sendSpoilerMedia: true
+});
+
+async function userSettings(ownerId) {
+  const saved = await get(userSettingsKey(ownerId));
+  return { ...DEFAULT_USER_SETTINGS, ...(saved || {}) };
+}
+
+async function saveUserSettings(ownerId, next) {
+  await put(userSettingsKey(ownerId), next, null);
+  await rememberOwnerData(ownerId, userSettingsKey(ownerId));
+  return next;
+}
+
+async function shouldNotify(ownerId, type) {
+  const settings = await userSettings(ownerId);
+  return settings.notifications && (type === "edited" ? settings.notifyEdited : settings.notifyDeleted);
+}
 
 async function personalSubscription(ownerId) {
   return get(`subscription:${ownerId}`);
@@ -391,7 +460,7 @@ async function beginFunnel(ownerId) {
 }
 
 export async function trackFunnelEvent(ownerId, stage) {
-  const allowed = new Set(["mini_app_opened", "view_connect", "username_copied", "settings_requested", "view_plans", "invoice_opened"]);
+  const allowed = new Set(["mini_app_opened", "view_connect", "username_copied", "settings_requested", "instruction_opened", "view_plans", "invoice_opened"]);
   if (!ownerId || !allowed.has(stage)) return;
   await beginFunnel(ownerId);
   await updateFunnel(ownerId, stage);
@@ -473,11 +542,16 @@ async function deliverLockedEvents(ownerId, chatId) {
   const key = lockedEventsKey(ownerId);
   const events = (await get(key)) || [];
   if (!events.length) return;
-  const rows = events.slice(0, 10).map((event) => {
+  const delivered = events.slice(0, 10);
+  const rows = delivered.map((event) => {
     if (event.type === "edited") return editedMessageNotice(event);
     return deletedMessageNotice(event);
   });
   await notifyOwner(chatId, `<b>События, сохранённые после триала</b>\n\n${rows.join("\n\n")}`.slice(0, 4000));
+  const settings = await userSettings(ownerId);
+  if (settings.saveSpoilerMedia && settings.sendSpoilerMedia) {
+    for (const event of delivered) await sendSavedSpoilerMedia(chatId, event.hiddenMedia);
+  }
   await remove(key);
 }
 
@@ -550,13 +624,27 @@ async function funnelPass() {
       await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, first: now } }, null);
       return;
     }
-    if (!reminders.safety && now - funnel.startedAt >= SAFETY_NUDGE_DELAY_MS) {
+    if (!reminders.demo24 && now - funnel.startedAt >= FIRST_DEMO_DELAY_MS) {
       await telegram("sendMessage", {
         chat_id: ownerId,
-        text: "Ghost подключается только через встроенную «Автоматизацию чатов». Пароль и код входа не нужны; доступ можно отключить в любой момент.",
-        reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", callback_data: "connect" }]] }
+        text: "🗑 Пользователь @***** удалил сообщение\n\nСкучала по тебе безумно, но постоянно не было время поговорить.. Надеюсь хоть сейчас получится🥺",
+        reply_markup: { inline_keyboard: [[{ text: "Узнать кто это", callback_data: "guide" }]] }
       });
-      await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, safety: now } }, null);
+      await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, demo24: now } }, null);
+      return;
+    }
+    if (!reminders.demo48 && now - funnel.startedAt >= SECOND_DEMO_DELAY_MS) {
+      await telegram("sendMessage", {
+        chat_id: ownerId,
+        text: "🗑 @******* удалил сообщение\n\nТы еще поплатишься за свои поступки!",
+        reply_markup: { inline_keyboard: [[{ text: "Узнать кто это", callback_data: "guide" }]] }
+      });
+      await telegram("sendMessage", {
+        chat_id: ownerId,
+        text: "Самые интересные сообщения почему-то всегда удаляют 💀",
+        reply_markup: { inline_keyboard: [[{ text: "🗑 Сохранять удалённые", callback_data: "guide" }]] }
+      });
+      await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, demo48: now } }, null);
       await removeFromSet(funnelPendingKey, ownerId);
     }
   });
@@ -782,6 +870,7 @@ async function saveBusinessMessage(message) {
   // deletion update contains the connection id and can retrieve it safely.
   if (connection && !connection.enabled) return;
   const key = messageKey(message.business_connection_id, message.chat.id, message.message_id);
+  const settings = connection?.ownerId ? await userSettings(connection.ownerId) : DEFAULT_USER_SETTINGS;
   const snapshot = {
     ownerId: connection?.ownerId || null,
     connectionId: message.business_connection_id,
@@ -795,6 +884,8 @@ async function saveBusinessMessage(message) {
     timestamp: message.date,
     savedAt: new Date().toISOString()
   };
+  const hiddenMedia = settings.saveSpoilerMedia ? spoilerMediaSnapshot(message) : null;
+  if (hiddenMedia) snapshot.hiddenMedia = hiddenMedia;
   await put(key, snapshot);
   if (connection?.ownerId) {
     await addOwnerKey(connection.ownerId, key);
@@ -810,12 +901,16 @@ async function saveBusinessMessage(message) {
 }
 
 async function processEditedBusinessMessage(message) {
+  // Live locations are edited by Telegram many times while the sender moves.
+  // They are not a meaningful message edit and must never create a Ghost event.
+  if (isLiveLocationUpdate(message)) return;
   const key = messageKey(message.business_connection_id, message.chat.id, message.message_id);
   const previous = await get(key);
   await saveBusinessMessage(message);
   const connection = await get(`connection:${message.business_connection_id}`);
   if (!connection?.enabled) return;
   if (!previous || String(message.from?.id) === String(connection.ownerId) || String(previous.senderId) === String(connection.ownerId)) return;
+  const settings = await userSettings(connection.ownerId);
   const event = {
     type: "edited",
     chatId: message.chat.id,
@@ -825,15 +920,17 @@ async function processEditedBusinessMessage(message) {
     senderId: message.from?.id || previous.senderId || null,
     text: clip(messagePreview(message)),
     previous: clip(previous.text),
+    hiddenMedia: settings.saveSpoilerMedia ? previous.hiddenMedia || spoilerMediaSnapshot(message) : null,
     occurredAt: Date.now()
   };
   await recordEvent(connection.ownerId, event);
   const access = await getAccessState(connection.ownerId);
   if (access.kind === "locked") {
     await recordLockedEvent(connection.ownerId, event);
-    return sendLockedEventNotice(connection, "edited");
+    if (await shouldNotify(connection.ownerId, "edited")) return sendLockedEventNotice(connection, "edited");
+    return;
   }
-  await notifyOwner(connection.userChatId, editedMessageNotice(event));
+  if (await shouldNotify(connection.ownerId, "edited")) await notifyEventWithMedia(connection, event, editedMessageNotice(event));
 }
 
 async function processDeletedBusinessMessages(deleted) {
@@ -856,7 +953,7 @@ async function processDeletedBusinessMessages(deleted) {
     if (previous && String(previous.senderId) === String(connection.ownerId)) continue;
     if (!previous) {
       await recordEvent(connection.ownerId, { type: "deleted", chatId, chatTitle: chatTitle(deleted.chat), sender: null, text: null, unknown: true });
-      if ((await getAccessState(connection.ownerId)).kind !== "locked") {
+      if ((await getAccessState(connection.ownerId)).kind !== "locked" && await shouldNotify(connection.ownerId, "deleted")) {
         await notifyOwner(connection.userChatId,
           `<b>🗑 Сообщение удалено</b>\n\nTelegram сообщил об удалении, но Ghost не получил исходный текст. Это бывает, если сообщение было отправлено до подключения или не входило в разрешённый доступ бота.`
         );
@@ -871,15 +968,16 @@ async function processDeletedBusinessMessages(deleted) {
       username: previous.username || null,
       senderId: previous.senderId || null,
       text: clip(previous.text),
+      hiddenMedia: previous.hiddenMedia || null,
       occurredAt: Date.now()
     };
     await recordEvent(connection.ownerId, event);
     if ((await getAccessState(connection.ownerId)).kind === "locked") {
       await recordLockedEvent(connection.ownerId, event);
-      await sendLockedEventNotice(connection, "deleted");
+      if (await shouldNotify(connection.ownerId, "deleted")) await sendLockedEventNotice(connection, "deleted");
       continue;
     }
-    await notifyOwner(connection.userChatId, deletedMessageNotice(event));
+    if (await shouldNotify(connection.ownerId, "deleted")) await notifyEventWithMedia(connection, event, deletedMessageNotice(event));
   }
 }
 
@@ -1426,14 +1524,67 @@ async function sendBroadcastPreview(chatId, adminId) {
   return telegram("sendMessage", { chat_id: chatId, text: "Проверьте превью поста.", reply_markup: broadcastControls("preview") });
 }
 
-async function sendSettingsPrompt(chatId, ownerId = chatId) {
+const instructionText = () => `
+<tg-emoji emoji-id="5411127204857812990">⚙️</tg-emoji> <b>Подключение за 30 секунд:</b>
+
+<tg-emoji emoji-id="5794182096603847292">1️⃣</tg-emoji> Нажми и скопируй <b>username</b>
+&#x20;      <code>@${BOT_USERNAME}</code> <tg-emoji emoji-id="5413573223092624530">↩️</tg-emoji> тык
+<tg-emoji emoji-id="5794303034292968945">2⃣</tg-emoji> Открой <a href="tg://settings/edit">настройки</a>
+&#x20;      <a href="tg://settings/edit">Telegram-профиля</a>
+<tg-emoji emoji-id="5794031944547178894">3⃣</tg-emoji> Найди пункт настроек
+&#x20;     <tg-emoji emoji-id="5469753237865275412">✨</tg-emoji> <b>Автоматизация чатов</b>
+<tg-emoji emoji-id="5793901252987330401">4⃣</tg-emoji> Вставь username <b>${BRAND}</b>
+&#x20;      <code>@${BOT_USERNAME}</code>
+&#x20;      и нажми <b>Добавить</b>
+
+<blockquote><tg-emoji emoji-id="5881702736843511327">⚠️</tg-emoji> До подключения события теряются навсегда.</blockquote>
+`.trim();
+
+async function copyGuideAsset(chatId, messageId) {
+  return telegram("copyMessage", {
+    chat_id: chatId,
+    from_chat_id: GUIDE_ASSETS_CHAT_ID,
+    message_id: messageId
+  });
+}
+
+async function sendInstruction(chatId, ownerId = chatId) {
   await beginFunnel(ownerId);
-  await updateFunnel(ownerId, "settings_requested");
+  await updateFunnel(ownerId, "instruction_opened");
+  await copyGuideAsset(chatId, GUIDE_VIDEO_MESSAGE_ID).catch((error) => console.error("Guide video copy failed", error));
   return telegram("sendMessage", {
     chat_id: chatId,
-    text: `Откройте <a href="tg://settings/edit">настройки профиля Telegram</a>, пролистайте вниз и найдите «Автоматизация чатов». Затем вставьте <code>@${BOT_USERNAME}</code>.`,
+    text: instructionText(),
     parse_mode: "HTML",
     reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", url: "tg://settings/edit" }]] }
+  });
+}
+
+const preferenceButton = (settings, key, enabledLabel, disabledLabel) => ({
+  text: `${settings[key] ? "✅" : "◻️"} ${settings[key] ? enabledLabel : disabledLabel}`,
+  callback_data: `pref:${key}`
+});
+
+function ghostSettingsKeyboard(settings) {
+  return { inline_keyboard: [
+    [preferenceButton(settings, "notifications", "Уведомления включены", "Уведомления выключены")],
+    [preferenceButton(settings, "saveSpoilerMedia", "Сохранять скрытые медиа", "Не сохранять скрытые медиа")],
+    [preferenceButton(settings, "notifyEdited", "Уведомлять об изменениях", "Не уведомлять об изменениях")],
+    [preferenceButton(settings, "notifyDeleted", "Уведомлять об удалениях", "Не уведомлять об удалениях")],
+    [preferenceButton(settings, "sendSpoilerMedia", "Присылать скрытые медиа", "Не присылать скрытые медиа")],
+    [{ text: "💎 Подписка", web_app: { url: appLink("plans") || botLink } }],
+    [{ text: "↩️ Вернуться в профиль", url: "tg://settings/edit" }]
+  ] };
+}
+
+async function sendGhostSettings(chatId, ownerId = chatId) {
+  await copyGuideAsset(chatId, SETTINGS_IMAGE_MESSAGE_ID).catch((error) => console.error("Settings image copy failed", error));
+  const settings = await userSettings(ownerId);
+  return telegram("sendMessage", {
+    chat_id: chatId,
+    text: "⚙️ <b>Настройки</b>\n\nИзменения применяются сразу.",
+    parse_mode: "HTML",
+    reply_markup: ghostSettingsKeyboard(settings)
   });
 }
 
@@ -1556,7 +1707,7 @@ async function commandHandler(message) {
   if (command === "/admin" && message.from && isAdmin(message.from.id)) return sendAdminPanel(message.chat.id);
   if (command === "/start") {
     await beginFunnel(message.from.id);
-    if (argument === "settings") return sendSettingsPrompt(message.chat.id, message.from.id);
+    if (argument === "settings") return sendInstruction(message.chat.id, message.from.id);
     if (argument?.startsWith("buy_")) return sendStarsInvoice(message.chat.id, argument.slice(4));
     if (argument) await registerReferralVisit(argument.toLowerCase(), message);
     const language = (await get(`language:${message.from.id}`))?.code || "ru";
@@ -1593,7 +1744,27 @@ async function callbackHandler(callback) {
   const [action, suppliedId, detail] = (callback.data || "").split(":");
   if (action === "connect") {
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
-    return sendSettingsPrompt(callback.message.chat.id, callback.from.id);
+    return sendInstruction(callback.message.chat.id, callback.from.id);
+  }
+  if (action === "guide") {
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id });
+    return sendInstruction(callback.message.chat.id, callback.from.id);
+  }
+  if (action === "settings") {
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id });
+    return sendGhostSettings(callback.message.chat.id, callback.from.id);
+  }
+  if (action === "pref") {
+    const allowed = new Set(["notifications", "saveSpoilerMedia", "notifyEdited", "notifyDeleted", "sendSpoilerMedia"]);
+    if (!allowed.has(suppliedId)) return telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Неизвестная настройка" });
+    const current = await userSettings(callback.from.id);
+    const settings = await saveUserSettings(callback.from.id, { ...current, [suppliedId]: !current[suppliedId] });
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id, text: settings[suppliedId] ? "Включено" : "Выключено" });
+    return telegram("editMessageReplyMarkup", {
+      chat_id: callback.message.chat.id,
+      message_id: callback.message.message_id,
+      reply_markup: ghostSettingsKeyboard(settings)
+    });
   }
   if (action === "admin") {
     if (!isAdmin(callback.from.id)) return telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Нет доступа", show_alert: true });
