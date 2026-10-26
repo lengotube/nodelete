@@ -945,7 +945,6 @@ const editedMessageNotice = (event) =>
   `<b>Новое:</b>\n<blockquote>${escapeHtml(event.text)}</blockquote>\n\n` +
   `<b>Было:</b>\n<blockquote><s>${escapeHtml(event.previous)}</s></blockquote>`;
 
-const dateKey = (value = new Date()) => new Date(value).toISOString().slice(0, 10);
 const money = (value) => new Intl.NumberFormat("ru-RU").format(Number(value) || 0);
 
 async function registerUser(message, referralCode = null) {
@@ -1224,31 +1223,97 @@ async function sendAdminPanel(chatId) {
   });
 }
 
-async function sendAdminStats(chatId) {
+const STATS_PERIODS = {
+  today: "Сегодня",
+  week: "Неделя",
+  month: "Месяц",
+  all: "Всё время"
+};
+
+function adminCalendarParts(now = Date.now()) {
+  const values = new Intl.DateTimeFormat("en-CA", {
+    timeZone: process.env.ADMIN_TIME_ZONE || "Asia/Almaty",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+  }).formatToParts(new Date(now));
+  const parts = Object.fromEntries(values.filter(({ type }) => type !== "literal").map(({ type, value }) => [type, Number(value)]));
+  return { year: parts.year, month: parts.month, day: parts.day, hour: parts.hour, minute: parts.minute, second: parts.second };
+}
+
+function statsPeriod(period, now = Date.now()) {
+  const key = STATS_PERIODS[period] ? period : "today";
+  if (key === "all") return { key, label: STATS_PERIODS[key], start: 0, end: now };
+  const local = adminCalendarParts(now);
+  const localNow = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second);
+  const offset = localNow - now;
+  let localStart = Date.UTC(local.year, local.month - 1, local.day);
+  if (key === "week") {
+    const weekday = new Date(localStart).getUTCDay() || 7;
+    localStart -= (weekday - 1) * 24 * 60 * 60 * 1000;
+  }
+  if (key === "month") localStart = Date.UTC(local.year, local.month - 1, 1);
+  return { key, label: STATS_PERIODS[key], start: localStart - offset, end: now };
+}
+
+const isInStatsPeriod = (value, period) => {
+  const at = typeof value === "number" ? value : Date.parse(value);
+  return Number.isFinite(at) && at >= period.start && at <= period.end;
+};
+
+function statsKeyboard(period) {
+  const title = (key) => `${key === period ? "✓ " : ""}${STATS_PERIODS[key]}`;
+  return { inline_keyboard: [
+    [{ text: title("today"), callback_data: "admin:stats:today" }, { text: title("week"), callback_data: "admin:stats:week" }],
+    [{ text: title("month"), callback_data: "admin:stats:month" }, { text: title("all"), callback_data: "admin:stats:all" }],
+    [{ text: "← Админ-панель", callback_data: "admin:back" }]
+  ] };
+}
+
+function referralLedgerEntry(value) {
+  const [at, code, userId, price] = String(value || "").split("|");
+  const timestamp = Number(at);
+  if (!Number.isFinite(timestamp) || !code || !userId || !Number.isFinite(Number(price))) return null;
+  return { at: timestamp, code, userId, price: Number(price) };
+}
+
+async function sendAdminStats(chatId, periodKey = "today", messageId = null) {
+  const period = statsPeriod(periodKey);
   const ids = await members("users:active");
-  const [users, payments, invalidIds, trials, eventLists, referrals] = await Promise.all([
+  const [users, payments, invalidIds, trials, eventLists, referrals, referralCodes, referralVisits] = await Promise.all([
     Promise.all(ids.map((id) => get(`user:${id}`))).then((items) => items.filter(Boolean)),
     Promise.all((await members("payments:ids")).map((id) => get(`payment:${id}`))).then((items) => items.filter(Boolean)),
     members("users:invalid"),
     Promise.all(ids.map((id) => get(trialKey(id)))),
     Promise.all(ids.map((id) => get(`events:${id}`))),
-    allReferralStats()
+    allReferralStats(),
+    members("referrals:codes"),
+    members("ledger:ref_visits")
   ]);
-  const today = dateKey();
-  const newToday = users.filter((user) => dateKey(user.joinedAt) === today).length;
+
+  const periodUsers = users.filter((user) => isInStatsPeriod(user.joinedAt, period));
+  const periodUserIds = new Set(periodUsers.map((user) => String(user.id)));
   const confirmedPayments = payments.filter((payment) => payment.currency === "XTR" && payment.status !== "needs_review");
-  const paidToday = confirmedPayments.filter((payment) => dateKey(payment.purchasedAt) === today);
-  const revenueToday = paidToday.reduce((total, payment) => total + (payment.amount || 0), 0);
-  const revenueAll = confirmedPayments.reduce((total, payment) => total + (payment.amount || 0), 0);
-  const referralCodes = await members("referrals:codes");
+  const periodPayments = confirmedPayments.filter((payment) => isInStatsPeriod(payment.purchasedAt, period));
+  const periodStars = periodPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
   const inactive = new Set(invalidIds.map(String));
-  const trialCount = trials.filter(Boolean).length;
-  const caught = eventLists.filter((events) => Array.isArray(events) && events.length > 0).length;
-  const events = eventLists.reduce((total, list) => total + (Array.isArray(list) ? list.length : 0), 0);
-  const premium = users.filter((user) => user.isPremium).length;
-  const adSpend = referrals.reduce((total, referral) => total + referral.totalCost, 0);
-  const text = `<tg-emoji emoji-id="5413822103562524971">📢</tg-emoji><b> Статистика Ghost — сегодня</b>\n━━━━━━━━━━━━\n\n<tg-emoji emoji-id="5413740297320440148">👤</tg-emoji><b> Пользователи</b>\nНовых: <b>${money(newToday)}</b>\nНеактивные: <b>${money(inactive.size)}</b> (${share(inactive.size, users.length)}%)\nС TG Premium: <b>${money(premium)}</b>\nДоступных для рассылки: <b>${money(users.length)}</b>\n\n<b><tg-emoji emoji-id="5411395283831527574">📊</tg-emoji></b> <b>Конверсия</b>\n  Подключили триал: <b>${money(trialCount)}</b>\n  Сколько человек поймали события: <b>${money(caught)}</b>\n  Ср. событий на пользователя: <b>${caught ? ruNumber(events / caught) : "0"}</b>\n\n<b><tg-emoji emoji-id="5411209779899046667">⭐️</tg-emoji></b><b> Платежи</b>\nСегодня: <b>${money(paidToday.length)}</b> (${money(revenueToday)} Stars)\nВсего: <b>${money(confirmedPayments.length)}</b> (${money(revenueAll)} Stars)\nКонверсия в оплату: <b>${users.length ? (confirmedPayments.length / users.length * 100).toFixed(1) : "0.0"}%</b>\n\n<tg-emoji emoji-id="5411332955266127667">🔗</tg-emoji><b> Реклама</b>\nАктивных ссылок: <b>${money(referralCodes.length)}</b>\nРасходы на рекламу: <b>${money(Math.round(adSpend))} ₽</b>\n\n<b>Финансовый итог:</b> <b>не рассчитан</b>\n<i>Ghost не видит баланс Stars, комиссию Telegram и фактические выплаты. Stars в инвойсах — не рублёвый доход.</i>`;
-  return telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", reply_markup: { inline_keyboard: [[{ text: "← Админ-панель", callback_data: "admin:back" }]] } });
+  const periodTrials = trials.filter((trial) => trial && isInStatsPeriod(trial.startedAt, period));
+  const periodEventLists = eventLists.map((list) => (Array.isArray(list) ? list.filter((event) => isInStatsPeriod(event.at, period)) : []));
+  const caught = periodEventLists.filter((events) => events.length > 0).length;
+  const events = periodEventLists.reduce((total, list) => total + list.length, 0);
+  const premium = periodUsers.filter((user) => user.isPremium).length;
+  const inactiveInPeriod = periodUsers.filter((user) => inactive.has(String(user.id))).length;
+  const cohortPayers = new Set(periodPayments.filter((payment) => periodUserIds.has(String(payment.userId))).map((payment) => String(payment.userId)));
+  const ledger = referralVisits.map(referralLedgerEntry).filter(Boolean);
+  const periodVisits = ledger.filter((entry) => isInStatsPeriod(entry.at, period));
+  const adSpend = period.key === "all"
+    ? referrals.reduce((total, referral) => total + referral.totalCost, 0)
+    : periodVisits.reduce((total, entry) => total + entry.price, 0);
+  const referralVisitors = new Set(periodVisits.map((entry) => entry.userId));
+  const referralLinks = new Set(periodVisits.map((entry) => entry.code));
+  const text = `<tg-emoji emoji-id="5413822103562524971">📢</tg-emoji><b> Статистика Ghost — ${period.label.toLowerCase()}</b>\n━━━━━━━━━━━━\n\n<tg-emoji emoji-id="5413740297320440148">👤</tg-emoji><b> Пользователи</b>\nНовых: <b>${money(periodUsers.length)}</b>\nНеактивные: <b>${money(inactiveInPeriod)}</b> (${share(inactiveInPeriod, periodUsers.length)}%)\nС TG Premium: <b>${money(premium)}</b>\nСейчас доступных для рассылки: <b>${money(users.length)}</b>\n\n<b><tg-emoji emoji-id="5411395283831527574">📊</tg-emoji></b> <b>Конверсия</b>\n  Подключили триал: <b>${money(periodTrials.length)}</b>\n  Поймали события: <b>${money(caught)}</b>\n  Ср. событий на пользователя: <b>${caught ? ruNumber(events / caught) : "0"}</b>\n\n<b><tg-emoji emoji-id="5411209779899046667">⭐️</tg-emoji></b><b> Платежи</b>\nЗа период: <b>${money(periodPayments.length)}</b> (${money(periodStars)} Stars)\nКонверсия в оплату: <b>${periodUsers.length ? (cohortPayers.size / periodUsers.length * 100).toFixed(1) : "0.0"}%</b>\n\n<tg-emoji emoji-id="5411332955266127667">🔗</tg-emoji><b> Реклама</b>\nАктивных ссылок: <b>${money(referralCodes.length)}</b>\nПереходов за период: <b>${money(referralVisitors.size)}</b>${period.key === "all" ? "" : ` · по ${money(referralLinks.size)} ссылкам`}\nРасходы на рекламу: <b>${money(Math.round(adSpend))} ₽</b>\n\n<b>Финансовый итог:</b> <b>не рассчитан</b>\n<i>Ghost не видит баланс Stars, комиссию Telegram и фактические выплаты. Stars в инвойсах — не рублёвый доход.</i>`;
+  const payload = { chat_id: chatId, text, parse_mode: "HTML", reply_markup: statsKeyboard(period.key) };
+  return messageId
+    ? telegram("editMessageText", { ...payload, message_id: messageId })
+    : telegram("sendMessage", payload);
 }
 
 async function sendUserExport(chatId) {
@@ -1525,7 +1590,7 @@ async function commandHandler(message) {
 }
 
 async function callbackHandler(callback) {
-  const [action, suppliedId] = (callback.data || "").split(":");
+  const [action, suppliedId, detail] = (callback.data || "").split(":");
   if (action === "connect") {
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
     return sendSettingsPrompt(callback.message.chat.id, callback.from.id);
@@ -1534,7 +1599,16 @@ async function callbackHandler(callback) {
     if (!isAdmin(callback.from.id)) return telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Нет доступа", show_alert: true });
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
     if (suppliedId === "back") return sendAdminPanel(callback.message.chat.id);
-    if (suppliedId === "stats") return sendAdminStats(callback.message.chat.id);
+    if (suppliedId === "stats") {
+      const period = STATS_PERIODS[detail] ? detail : "today";
+      try {
+        return await sendAdminStats(callback.message.chat.id, period, callback.message.message_id);
+      } catch (error) {
+        const unchanged = /not modified/i.test(String(error?.message));
+        if (!unchanged) console.error("Admin stats update failed", error);
+        return null;
+      }
+    }
     if (suppliedId === "vip") {
       await put(`admin:flow:${callback.from.id}`, { type: "vip_target" }, 15 * 60);
       return telegram("sendMessage", { chat_id: callback.message.chat.id, text: "Перешлите сообщение пользователя, отправьте его контакт или пришлите числовой Telegram ID. Затем Ghost спросит число дней для VIP.", reply_markup: { inline_keyboard: [[{ text: "Отмена", callback_data: "admin:vipcancel" }]] } });
