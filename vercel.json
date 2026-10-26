@@ -9,8 +9,8 @@
   },
   "rewrites": [
     { "source": "/app", "destination": "/index.html" },
-    { "source": "/api/dashboard", "destination": "http://45-114-60-81.sslip.io/api/dashboard" },
-    { "source": "/api/funnel", "destination": "http://45-114-60-81.sslip.io/api/funnel" },
+    { "source": "/api/dashboard", "destination": "https://45-114-60-81.sslip.io/api/dashboard" },
+    { "source": "/api/funnel", "destination": "https://45-114-60-81.sslip.io/api/funnel" },
     { "source": "/api/crypto", "destination": "https://45-114-60-81.sslip.io/api/crypto" }
   ]
 }
