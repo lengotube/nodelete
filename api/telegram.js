@@ -1549,23 +1549,28 @@ const instructionText = () => `
 <blockquote><tg-emoji emoji-id="5881702736843511327">⚠️</tg-emoji> До подключения события теряются навсегда.</blockquote>
 `.trim();
 
-async function copyGuideAsset(chatId, messageId) {
+async function copyGuideAsset(chatId, messageId, { caption, replyMarkup } = {}) {
   return telegram("copyMessage", {
     chat_id: chatId,
     from_chat_id: GUIDE_ASSETS_CHAT_ID,
-    message_id: messageId
+    message_id: messageId,
+    ...(caption ? { caption, parse_mode: "HTML" } : {}),
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {})
   });
 }
 
 async function sendInstruction(chatId, ownerId = chatId) {
   await beginFunnel(ownerId);
   await updateFunnel(ownerId, "instruction_opened");
-  await copyGuideAsset(chatId, GUIDE_VIDEO_MESSAGE_ID).catch((error) => console.error("Guide video copy failed", error));
+  const replyMarkup = { inline_keyboard: [[{ text: "Открыть настройки Telegram", icon_custom_emoji_id: "5411127204857812990", url: "tg://settings/edit" }]] };
+  const copied = await copyGuideAsset(chatId, GUIDE_VIDEO_MESSAGE_ID, { caption: instructionText(), replyMarkup })
+    .catch((error) => { console.error("Guide video copy failed", error); return null; });
+  if (copied) return copied;
   return telegram("sendMessage", {
     chat_id: chatId,
     text: instructionText(),
     parse_mode: "HTML",
-    reply_markup: { inline_keyboard: [[{ text: "Открыть настройки Telegram", icon_custom_emoji_id: "5411127204857812990", url: "tg://settings/edit" }]] }
+    reply_markup: replyMarkup
   });
 }
 
@@ -1588,13 +1593,17 @@ function ghostSettingsKeyboard(settings) {
 }
 
 async function sendGhostSettings(chatId, ownerId = chatId) {
-  await copyGuideAsset(chatId, SETTINGS_IMAGE_MESSAGE_ID).catch((error) => console.error("Settings image copy failed", error));
   const settings = await userSettings(ownerId);
+  const caption = "<tg-emoji emoji-id=\"5411127204857812990\">⚙️</tg-emoji> <b>Настройки</b>\n\nИзменения применяются сразу.";
+  const replyMarkup = ghostSettingsKeyboard(settings);
+  const copied = await copyGuideAsset(chatId, SETTINGS_IMAGE_MESSAGE_ID, { caption, replyMarkup })
+    .catch((error) => { console.error("Settings image copy failed", error); return null; });
+  if (copied) return copied;
   return telegram("sendMessage", {
     chat_id: chatId,
-    text: "<tg-emoji emoji-id=\"5411127204857812990\">⚙️</tg-emoji> <b>Настройки</b>\n\nИзменения применяются сразу.",
+    text: caption,
     parse_mode: "HTML",
-    reply_markup: ghostSettingsKeyboard(settings)
+    reply_markup: replyMarkup
   });
 }
 

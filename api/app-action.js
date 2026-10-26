@@ -79,17 +79,23 @@ export default async function handler(request, response) {
     const { action, initData } = request.body || {};
     const user = verifiedUser(initData);
     if (action === "settings") {
-      await telegram("copyMessage", {
+      const caption = settingsText(process.env.BOT_USERNAME || "ghostmsg_robot");
+      const replyMarkup = { inline_keyboard: [[{ text: "Открыть настройки Telegram", icon_custom_emoji_id: "5411127204857812990", url: "tg://settings/edit" }]] };
+      const copied = await telegram("copyMessage", {
         chat_id: user.id,
         from_chat_id: GUIDE_ASSETS_CHAT_ID,
-        message_id: GUIDE_VIDEO_MESSAGE_ID
-      }).catch((error) => console.error("Guide video copy failed", error));
+        message_id: GUIDE_VIDEO_MESSAGE_ID,
+        caption,
+        parse_mode: "HTML",
+        reply_markup: replyMarkup
+      }).catch((error) => { console.error("Guide video copy failed", error); return null; });
+      if (copied) return responseJson(response, 200, { ok: true });
       await telegram("sendMessage", {
         chat_id: user.id,
-        text: settingsText(process.env.BOT_USERNAME || "ghostmsg_robot"),
+        text: caption,
         parse_mode: "HTML",
         disable_web_page_preview: true,
-        reply_markup: { inline_keyboard: [[{ text: "Открыть настройки Telegram", icon_custom_emoji_id: "5411127204857812990", url: "tg://settings/edit" }]] }
+        reply_markup: replyMarkup
       });
     } else if (action === "support") {
       await telegram("sendMessage", {
