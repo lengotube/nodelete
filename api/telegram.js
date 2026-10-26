@@ -39,31 +39,13 @@ const LOCALE = {
 };
 
 const welcomeText = (appUrl) => `
-<b><tg-emoji emoji-id="5413857558517553804">💬</tg-emoji></b><b> Восстанавливает личные сообщения</b>
-<b><tg-emoji emoji-id="5413822103562524971">📢</tg-emoji></b><b> Восстанавливает сообщения в группах</b>
-<b><tg-emoji emoji-id="5411515199318431537">📄</tg-emoji></b><b> Делает резервную копию выбранных переписок</b>
+<b><tg-emoji emoji-id="6041921818896372382">👋</tg-emoji></b><b> Добро пожаловать в Ghost</b>
 
-Это работает через <b>официальную функцию Telegram</b> — <a href="https://t.me/durov/519">пост Павла Дурова</a>.
-<tg-emoji emoji-id="5411510242926172833">👮</tg-emoji> Подробнее <a href="${appUrl}/app?screen=safety">о безопасности ›</a>
+<tg-emoji emoji-id="6039614175917903752">✏️</tg-emoji> Правки, удаления и история сообщений.
+<tg-emoji emoji-id="6048390817033228573">📸</tg-emoji> Исчезающие фото, видео и голосовые.
+<tg-emoji emoji-id="5884366771913233289">🕵️</tg-emoji> Приватный просмотр и защищённый архив.
 
-<b>Подключение за 30 секунд:</b>
-<tg-emoji emoji-id="5794182096603847292">1️⃣</tg-emoji> Скопируй username <b>${BRAND}</b>
-&#x20;      <code>@${BOT_USERNAME}</code> <tg-emoji emoji-id="5413573223092624530">↩️</tg-emoji> нажми
-<tg-emoji emoji-id="5794303034292968945">2⃣</tg-emoji> Открой <a href="tg://settings/edit">настройки</a>
-&#x20;      <a href="tg://settings/edit">Telegram-профиля</a>
-<tg-emoji emoji-id="5794031944547178894">3⃣</tg-emoji> Найди пункт настроек
-&#x20;     <tg-emoji emoji-id="5469753237865275412">✨</tg-emoji> <b>Автоматизация чатов</b>
-<tg-emoji emoji-id="5793901252987330401">4⃣</tg-emoji> Вставь username <b>${BRAND}</b>
-&#x20;      <code>@${BOT_USERNAME}</code>
-&#x20;      и нажми <b>Добавить</b>
-
-<b>Частые вопросы:</b>
-<a href="${appUrl}/app?screen=safety">Насколько это безопасно? ›</a>
-<a href="${appUrl}/app?screen=help">У меня не работает ›</a>
-<a href="${appUrl}/app?screen=groups">Как настроить в группах ›</a>
-<a href="${appUrl}/app?screen=backup">Как настроить резервную копию переписок ›</a>
-<a href="${TERMS_URL}">Пользовательское соглашение ›</a>
-<a href="${PRIVACY_URL}">Политика конфиденциальности ›</a>
+<blockquote><tg-emoji emoji-id="5316554554735607106">⚠️</tg-emoji>Вы не подключены к нашему боту, следуйте инструкции по кнопке ниже.</blockquote>
 `.trim();
 
 const welcomeTextEn = (appUrl) => `
@@ -112,8 +94,8 @@ const keyboard = (language = "ru") => {
   inline_keyboard: [
     [{ text: "Открыть Mini App", icon_custom_emoji_id: "5411465691230411357", web_app: { url: appLink("connect") || botLink } }],
     [
-      { text: "⚙️ Настройки", callback_data: "settings" },
-      { text: "📖 Инструкция", callback_data: "guide" }
+      { text: "Настройки", icon_custom_emoji_id: "5411127204857812990", callback_data: "settings" },
+      { text: "Инструкция", icon_custom_emoji_id: "5413333435068489794", callback_data: "guide" }
     ],
     [
       { text: copy.support, icon_custom_emoji_id: "5411350246804461567", url: SUPPORT_URL || process.env.COMMUNITY_URL || botLink },
@@ -367,27 +349,52 @@ async function trackRefUser(userId, update) {
 const senderName = (message) => [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") || "Собеседник";
 const notifyOwner = (chatId, text) => telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } });
 
-async function sendSavedSpoilerMedia(chatId, media) {
-  if (!media?.fileId) return;
+const MEDIA_CAPTION_FALLBACK = "<b>Ghost сохранил скрытое медиа.</b>";
+
+async function sendSavedSpoilerMedia(chatId, media, caption = MEDIA_CAPTION_FALLBACK) {
+  if (!media?.fileId) return { sent: false, captionAttached: false };
   const methodByKind = { photo: "sendPhoto", video: "sendVideo", animation: "sendAnimation", document: "sendDocument" };
   const fieldByKind = { photo: "photo", video: "video", animation: "animation", document: "document" };
   const method = methodByKind[media.kind];
   const field = fieldByKind[media.kind];
-  if (!method || !field) return;
-  await telegram(method, {
+  if (!method || !field) return { sent: false, captionAttached: false };
+  const payload = (caption) => ({
     chat_id: chatId,
     [field]: media.fileId,
-    caption: "<b>Скрытое медиа, сохранённое Ghost</b>",
+    caption,
     parse_mode: "HTML"
-  }).catch((error) => console.error("Saved spoiler media delivery failed", error));
+  });
+  try {
+    await telegram(method, payload(caption));
+    return { sent: true, captionAttached: true };
+  } catch (error) {
+    // Captions have a stricter Telegram limit than regular messages. Keep the
+    // media in the event even for a long edited-message diff, then send that
+    // full diff below as a normal message.
+    if (caption !== MEDIA_CAPTION_FALLBACK) {
+      try {
+        await telegram(method, payload(MEDIA_CAPTION_FALLBACK));
+        return { sent: true, captionAttached: false };
+      } catch (fallbackError) {
+        console.error("Saved spoiler media delivery failed", fallbackError);
+      }
+    } else {
+      console.error("Saved spoiler media delivery failed", error);
+    }
+    return { sent: false, captionAttached: false };
+  }
 }
 
 async function notifyEventWithMedia(connection, event, text) {
-  await notifyOwner(connection.userChatId, text);
   const settings = await userSettings(connection.ownerId);
   if (settings.saveSpoilerMedia && settings.sendSpoilerMedia && event.hiddenMedia) {
-    await sendSavedSpoilerMedia(connection.userChatId, event.hiddenMedia);
+    const delivery = await sendSavedSpoilerMedia(connection.userChatId, event.hiddenMedia, text);
+    if (delivery.sent) {
+      if (!delivery.captionAttached) await notifyOwner(connection.userChatId, text);
+      return;
+    }
   }
+  await notifyOwner(connection.userChatId, text);
 }
 
 const trialKey = (ownerId) => `trial:${ownerId}`;
@@ -543,15 +550,17 @@ async function deliverLockedEvents(ownerId, chatId) {
   const events = (await get(key)) || [];
   if (!events.length) return;
   const delivered = events.slice(0, 10);
-  const rows = delivered.map((event) => {
-    if (event.type === "edited") return editedMessageNotice(event);
-    return deletedMessageNotice(event);
-  });
-  await notifyOwner(chatId, `<b>События, сохранённые после триала</b>\n\n${rows.join("\n\n")}`.slice(0, 4000));
   const settings = await userSettings(ownerId);
-  if (settings.saveSpoilerMedia && settings.sendSpoilerMedia) {
-    for (const event of delivered) await sendSavedSpoilerMedia(chatId, event.hiddenMedia);
+  const withoutMedia = [];
+  await notifyOwner(chatId, "<b>События, сохранённые после триала</b>");
+  for (const event of delivered) {
+    const text = event.type === "edited" ? editedMessageNotice(event) : deletedMessageNotice(event);
+    const delivery = settings.saveSpoilerMedia && settings.sendSpoilerMedia && event.hiddenMedia
+      ? await sendSavedSpoilerMedia(chatId, event.hiddenMedia, text)
+      : { sent: false, captionAttached: false };
+    if (!delivery.sent || !delivery.captionAttached) withoutMedia.push(text);
   }
+  if (withoutMedia.length) await notifyOwner(chatId, withoutMedia.join("\n\n").slice(0, 4000));
   await remove(key);
 }
 
@@ -619,7 +628,7 @@ async function funnelPass() {
       await telegram("sendMessage", {
         chat_id: ownerId,
         text: "Нужна помощь с подключением? Нажмите кнопку — Ghost пришлёт прямую ссылку на настройки Telegram.",
-        reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", callback_data: "connect" }]] }
+        reply_markup: { inline_keyboard: [[{ text: "Открыть настройки Telegram", icon_custom_emoji_id: "5411127204857812990", callback_data: "connect" }]] }
       });
       await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, first: now } }, null);
       return;
@@ -753,7 +762,7 @@ async function activateCryptoOrder(transactionId, transaction = {}) {
   const language = (await get(`language:${order.userId}`))?.code || "ru";
   const copy = LOCALE[language] || LOCALE.ru;
   const until = plan.days ? ` до ${new Date(expiresAt).toLocaleDateString(language === "en" ? "en-GB" : "ru-RU")}` : (language === "en" ? " forever" : " навсегда");
-  await telegram("sendMessage", { chat_id: order.userId, text: language === "en" ? `✅ <b>${copy.payment}.</b>\n\nYour <b>${plan.title}</b> plan is ${copy.activated}${until}.` : `✅ <b>${copy.payment}.</b>\n\nТариф <b>${plan.title}</b> ${copy.activated}${until}.`, parse_mode: "HTML" }).catch(() => null);
+  await telegram("sendMessage", { chat_id: order.userId, text: language === "en" ? `<tg-emoji emoji-id="5411126895620167819">✅</tg-emoji> <b>${copy.payment}.</b>\n\nYour <b>${plan.title}</b> plan is ${copy.activated}${until}.` : `<tg-emoji emoji-id="5411126895620167819">✅</tg-emoji> <b>${copy.payment}.</b>\n\nТариф <b>${plan.title}</b> ${copy.activated}${until}.`, parse_mode: "HTML" }).catch(() => null);
   const trial = await get(trialKey(order.userId));
   if (trial?.status === "active") {
     await put(trialKey(order.userId), { ...trial, status: "converted", convertedAt: Date.now() }, null);
@@ -852,10 +861,10 @@ async function completeStarsPayment(message) {
   await telegram("sendMessage", {
     chat_id: message.chat.id,
     text: isGroupPlan
-      ? `✅ <b>Доступ для ${plan.groups} групп активирован.</b>\n\nОн действует до ${new Date(expiresAt).toLocaleDateString("ru-RU")}. Откройте инструкцию и добавьте Ghost только в группы, которыми вы управляете.`
+      ? `<tg-emoji emoji-id="5411126895620167819">✅</tg-emoji> <b>Доступ для ${plan.groups} групп активирован.</b>\n\nОн действует до ${new Date(expiresAt).toLocaleDateString("ru-RU")}. Откройте инструкцию и добавьте Ghost только в группы, которыми вы управляете.`
       : language === "en"
-      ? `✅ <b>${copy.payment}.</b>\n\nYour <b>${plan.title}</b> plan is ${copy.activated}${plan.days ? ` until ${new Date(expiresAt).toLocaleDateString("en-GB")}` : " forever"}.`
-      : `✅ <b>${copy.payment}.</b>\n\nТариф <b>${plan.title}</b> ${copy.activated}${plan.days ? ` до ${new Date(expiresAt).toLocaleDateString("ru-RU")}` : " навсегда"}.`,
+      ? `<tg-emoji emoji-id="5411126895620167819">✅</tg-emoji> <b>${copy.payment}.</b>\n\nYour <b>${plan.title}</b> plan is ${copy.activated}${plan.days ? ` until ${new Date(expiresAt).toLocaleDateString("en-GB")}` : " forever"}.`
+      : `<tg-emoji emoji-id="5411126895620167819">✅</tg-emoji> <b>${copy.payment}.</b>\n\nТариф <b>${plan.title}</b> ${copy.activated}${plan.days ? ` до ${new Date(expiresAt).toLocaleDateString("ru-RU")}` : " навсегда"}.`,
     parse_mode: "HTML",
     reply_markup: isGroupPlan ? { inline_keyboard: [[{ text: "Открыть инструкцию для групп", web_app: { url: appLink("groups-guide") || botLink } }]] } : undefined
   });
@@ -1000,7 +1009,7 @@ async function storeConnection(connection) {
       ? `\n\n🎁 <b>Пробный период активирован на 3 дня.</b> До ${new Date(trial.endsAt).toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" })} Ghost будет показывать содержимое новых доступных событий бесплатно.`
       : "";
     await notifyOwner(connection.user_chat_id,
-      `✅ <b>${escapeHtml(BRAND)} подключён и готов к работе.</b>\n\nЯ буду присылать уведомления, если Telegram передаст мне событие удаления или изменения в чатах, которые вы разрешили. Старые сообщения до подключения недоступны.${trialText}`
+      `<tg-emoji emoji-id="5411126895620167819">✅</tg-emoji> <b>${escapeHtml(BRAND)} подключён и готов к работе.</b>\n\nЯ буду присылать уведомления, если Telegram передаст мне событие удаления или изменения в чатах, которые вы разрешили. Старые сообщения до подключения недоступны.${trialText}`
     );
   } else {
     await removeFromSet("business:enabled", ownerId);
@@ -1556,12 +1565,13 @@ async function sendInstruction(chatId, ownerId = chatId) {
     chat_id: chatId,
     text: instructionText(),
     parse_mode: "HTML",
-    reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", url: "tg://settings/edit" }]] }
+    reply_markup: { inline_keyboard: [[{ text: "Открыть настройки Telegram", icon_custom_emoji_id: "5411127204857812990", url: "tg://settings/edit" }]] }
   });
 }
 
 const preferenceButton = (settings, key, enabledLabel, disabledLabel) => ({
-  text: `${settings[key] ? "✅" : "◻️"} ${settings[key] ? enabledLabel : disabledLabel}`,
+  text: settings[key] ? enabledLabel : disabledLabel,
+  ...(settings[key] ? { icon_custom_emoji_id: "5411126895620167819" } : {}),
   callback_data: `pref:${key}`
 });
 
@@ -1572,8 +1582,8 @@ function ghostSettingsKeyboard(settings) {
     [preferenceButton(settings, "notifyEdited", "Уведомлять об изменениях", "Не уведомлять об изменениях")],
     [preferenceButton(settings, "notifyDeleted", "Уведомлять об удалениях", "Не уведомлять об удалениях")],
     [preferenceButton(settings, "sendSpoilerMedia", "Присылать скрытые медиа", "Не присылать скрытые медиа")],
-    [{ text: "💎 Подписка", web_app: { url: appLink("plans") || botLink } }],
-    [{ text: "↩️ Вернуться в профиль", url: "tg://settings/edit" }]
+    [{ text: "Подписка", icon_custom_emoji_id: "5411209779899046667", web_app: { url: appLink("plans") || botLink } }],
+    [{ text: "Вернуться в профиль", icon_custom_emoji_id: "5413728889887298622", url: "tg://settings/edit" }]
   ] };
 }
 
@@ -1582,7 +1592,7 @@ async function sendGhostSettings(chatId, ownerId = chatId) {
   const settings = await userSettings(ownerId);
   return telegram("sendMessage", {
     chat_id: chatId,
-    text: "⚙️ <b>Настройки</b>\n\nИзменения применяются сразу.",
+    text: "<tg-emoji emoji-id=\"5411127204857812990\">⚙️</tg-emoji> <b>Настройки</b>\n\nИзменения применяются сразу.",
     parse_mode: "HTML",
     reply_markup: ghostSettingsKeyboard(settings)
   });

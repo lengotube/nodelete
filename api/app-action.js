@@ -89,7 +89,7 @@ export default async function handler(request, response) {
         text: settingsText(process.env.BOT_USERNAME || "ghostmsg_robot"),
         parse_mode: "HTML",
         disable_web_page_preview: true,
-        reply_markup: { inline_keyboard: [[{ text: "⚙ Открыть настройки Telegram", url: "tg://settings/edit" }]] }
+        reply_markup: { inline_keyboard: [[{ text: "Открыть настройки Telegram", icon_custom_emoji_id: "5411127204857812990", url: "tg://settings/edit" }]] }
       });
     } else if (action === "support") {
       await telegram("sendMessage", {
