@@ -18,6 +18,8 @@ const TRIAL_DURATION_MS = 3 * 24 * 60 * 60 * 1000;
 const FIRST_NUDGE_DELAY_MS = 5 * 60 * 1000;
 const FIRST_DEMO_DELAY_MS = 24 * 60 * 60 * 1000;
 const SECOND_DEMO_DELAY_MS = 48 * 60 * 60 * 1000;
+const FREE_TRIAL_REMINDER_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
+const FREE_TRIAL_REMINDER_PHOTO_URL = process.env.FREE_TRIAL_REMINDER_PHOTO_URL || "https://raw.githubusercontent.com/lengotube/nodelete/main/public/ghost-free-trial-reminder-v1.png";
 const PAYWALL_NUDGE_DELAY_MS = 6 * 60 * 60 * 1000;
 const TRIAL_FORECAST_DAYS = 30;
 const GUIDE_ASSETS_CHAT_ID = process.env.GUIDE_ASSETS_CHAT_ID || "-1004319974246";
@@ -614,12 +616,49 @@ export async function runFunnelAutomation() {
   }
 }
 
+const freeTrialReminderKeyboard = () => ({ inline_keyboard: [[{
+  text: "Подключить бесплатно",
+  icon_custom_emoji_id: "5411126895620167819",
+  style: "success",
+  callback_data: "free_trial_guide"
+}]] });
+
+const freeTrialReminderCaption = () => [
+  "<b>Он удалил сообщение? Узнай, что там было.</b>",
+  "",
+  "Подключи Ghost — он начнёт сохранять новые сообщения и показывать удаления и правки в разрешённых чатах.",
+  "",
+  "<b>Первые 3 дня — бесплатно. Без карты и оплаты.</b>",
+  "Пробный период начнётся после подключения.",
+  "",
+  `<code>@${BOT_USERNAME}</code>`
+].join("\n");
+
+async function sendFreeTrialReminder(chatId) {
+  const assetKey = "asset:free-trial-reminder:v1";
+  const cached = await get(assetKey);
+  const payload = { chat_id: chatId, caption: freeTrialReminderCaption(), parse_mode: "HTML", reply_markup: freeTrialReminderKeyboard() };
+  let message;
+  try {
+    message = await telegram("sendPhoto", { ...payload, photo: cached?.fileId || FREE_TRIAL_REMINDER_PHOTO_URL });
+  } catch (error) {
+    if (!cached?.fileId || !/wrong file|file.*identifier|file.*invalid/i.test(String(error.message))) throw error;
+    message = await telegram("sendPhoto", { ...payload, photo: FREE_TRIAL_REMINDER_PHOTO_URL });
+  }
+  const fileId = message.photo?.at(-1)?.file_id;
+  if (fileId && fileId !== cached?.fileId) await put(assetKey, { fileId }, null);
+  return message;
+}
+
 async function funnelPass() {
   const now = Date.now();
   await activateTrialsForConnectedUsers();
+  const connectedOwners = new Set((await members("business:enabled")).map(String));
   await forEachOwner(await members(funnelPendingKey), "Funnel nudge", async (ownerId) => {
     const funnel = await get(funnelKey(ownerId));
-    if (!funnel?.startedAt || funnel.connectedAt || await personalSubscription(ownerId)) {
+    const previousTrial = await get(trialKey(ownerId));
+    const referralRecord = await get(refUserKey(ownerId));
+    if (!funnel?.startedAt || funnel.connectedAt || connectedOwners.has(String(ownerId)) || previousTrial || referralRecord?.trialAt || await personalSubscription(ownerId)) {
       await removeFromSet(funnelPendingKey, ownerId);
       return;
     }
@@ -654,7 +693,12 @@ async function funnelPass() {
         reply_markup: { inline_keyboard: [[{ text: "🗑 Сохранять удалённые", callback_data: "guide" }]] }
       });
       await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, demo48: now } }, null);
-      await removeFromSet(funnelPendingKey, ownerId);
+      return;
+    }
+    const lastFreeTrialReminderAt = reminders.freeTrialPromo || funnel.startedAt;
+    if (now - lastFreeTrialReminderAt >= FREE_TRIAL_REMINDER_INTERVAL_MS) {
+      await sendFreeTrialReminder(ownerId);
+      await put(funnelKey(ownerId), { ...funnel, reminders: { ...reminders, freeTrialPromo: now } }, null);
     }
   });
   await forEachOwner(await members(trialActiveKey), "Trial finish", async (ownerId) => {
@@ -1761,6 +1805,11 @@ async function commandHandler(message) {
 
 async function callbackHandler(callback) {
   const [action, suppliedId, detail] = (callback.data || "").split(":");
+  if (action === "free_trial_guide") {
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id });
+    await updateFunnel(callback.from.id, "free_trial_reminder_clicked");
+    return sendInstruction(callback.message.chat.id, callback.from.id);
+  }
   if (action === "connect") {
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
     return sendInstruction(callback.message.chat.id, callback.from.id);

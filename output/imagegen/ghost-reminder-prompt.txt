@@ -1,0 +1,16 @@
+Use case: ads-marketing.
+Create a NEW finished square promotional banner for Ghost Telegram bot, optimized to be readable as a Telegram photo on a phone.
+Input image 1 is a composition reference only: a competitor advertisement screenshot. Take inspiration from its striking huge headline, expressive adult woman looking at her phone, and a message card showing what was deleted. Do not reproduce the screenshot frame, competitor branding, dates, captions outside the ad, or the exact woman's identity.
+Input image 2 is the actual Ghost brand avatar. Use this exact recognizable avatar as a small rounded-square brand tile in the footer. Keep its white ghost in a hat and purple/lavender background recognizable; do not substitute another logo.
+Brand palette and visual finish: Ghost's lavender, violet, creamy white, soft gradients, polished 3D accents and high-contrast clean typography. Premium clean advertising graphic, not a dark horror poster. The woman is an adult about 25-30 with an expressive surprised face, natural hands holding a smartphone; she occupies right half and does not obscure the headline or message example. No sexualization.
+Layout: large headline at top left, dark charcoal rounded message card below it at mid-left, photographic woman on right, clear footer brand avatar plus bot username. A conspicuous violet promotional badge near the top reads the free offer. Balanced uncluttered square design with comfortable padding. Do not add an artificial green CTA button to the image: the real Telegram green button will be attached separately.
+Exact Russian text, correctly spelled, in these blocks:
+Main headline, very large: "Он удалил сообщение?"
+Offer badge, highly readable: "3 ДНЯ БЕСПЛАТНО"
+Message card header: "Собеседник удалил сообщение"
+Message card quote: "Я хотел сказать это лично…"
+Message card small status: "Ghost сохранил"
+Footer next to our avatar: "Ghost"
+Footer username, absolutely exact: "@ghostmsg_robot"
+Small footer explanation, still readable: "Новые сообщения после подключения"
+Constraints: all text above must be rendered legibly and verbatim. NO @notspybot, NO NotSpyBot, NO Phantom, NO extra usernames, NO watermarks, NO screenshot UI outside the banner. Use the actual Ghost avatar identity from image 2. Output a polished ready-to-send promotional banner.
