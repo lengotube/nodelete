@@ -19,7 +19,7 @@ const FIRST_NUDGE_DELAY_MS = 5 * 60 * 1000;
 const FIRST_DEMO_DELAY_MS = 24 * 60 * 60 * 1000;
 const SECOND_DEMO_DELAY_MS = 48 * 60 * 60 * 1000;
 const FREE_TRIAL_REMINDER_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
-const FREE_TRIAL_REMINDER_PHOTO_URL = process.env.FREE_TRIAL_REMINDER_PHOTO_URL || "https://raw.githubusercontent.com/lengotube/nodelete/main/public/ghost-free-trial-reminder-v1.png";
+const FREE_TRIAL_REMINDER_PHOTO_URL = process.env.FREE_TRIAL_REMINDER_PHOTO_URL || "https://raw.githubusercontent.com/lengotube/nodelete/main/public/ghost-free-trial-reminder-v2.png";
 const PAYWALL_NUDGE_DELAY_MS = 6 * 60 * 60 * 1000;
 const TRIAL_FORECAST_DAYS = 30;
 const GUIDE_ASSETS_CHAT_ID = process.env.GUIDE_ASSETS_CHAT_ID || "-1004319974246";
@@ -635,7 +635,7 @@ const freeTrialReminderCaption = () => [
 ].join("\n");
 
 async function sendFreeTrialReminder(chatId) {
-  const assetKey = "asset:free-trial-reminder:v1";
+  const assetKey = "asset:free-trial-reminder:v2";
   const cached = await get(assetKey);
   const payload = { chat_id: chatId, caption: freeTrialReminderCaption(), parse_mode: "HTML", reply_markup: freeTrialReminderKeyboard() };
   let message;
