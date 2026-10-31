@@ -1138,19 +1138,43 @@ async function registerReferralVisit(code, message) {
   return referral;
 }
 
-// Stars paid per user over all time: { userId: { stars, purchases, lastAt } }.
+// Plans granted by an admin were once stored like purchases (charge id "manual-…");
+// no Stars were paid for them, so they are never income.
+const isManualGrant = (chargeId) => String(chargeId || "").startsWith("manual-");
+
+// Stars paid per user over all time: { userId: { items: [{ at, stars }] } }.
 async function paymentsByUser() {
   const byUser = {};
   for (const chargeId of await members("payments:ids")) {
+    if (isManualGrant(chargeId)) continue;
     const payment = await get(`payment:${chargeId}`);
     if (!payment?.userId || payment.currency !== "XTR" || payment.status === "needs_review") continue;
-    const at = Date.parse(payment.purchasedAt) || 0;
-    const row = byUser[payment.userId] ||= { stars: 0, purchases: 0, lastAt: 0 };
-    row.stars += Number(payment.amount) || 0;
-    row.purchases++;
-    row.lastAt = Math.max(row.lastAt, at);
+    (byUser[payment.userId] ||= { items: [] }).items.push({ at: Date.parse(payment.purchasedAt) || 0, stars: Number(payment.amount) || 0 });
   }
   return byUser;
+}
+
+// What a visitor paid after arriving by the link (earlier purchases belong to no link).
+function paidSince(row, since) {
+  const items = (row?.items || []).filter((item) => item.at >= since);
+  if (!items.length) return null;
+  return { stars: items.reduce((total, item) => total + item.stars, 0), purchases: items.length, lastAt: Math.max(...items.map((item) => item.at)) };
+}
+
+// First arrival time per user for one link: the visit log, else the join date when the
+// user's own link is this one, else 0 (unknown — count everything).
+async function linkArrivals(code, visitors) {
+  const arrivals = {};
+  for (const value of await members("ledger:ref_visits")) {
+    const entry = referralLedgerEntry(value);
+    if (entry && entry.code === code && !(entry.userId in arrivals && arrivals[entry.userId] <= entry.at)) arrivals[entry.userId] = entry.at;
+  }
+  for (const id of visitors) {
+    if (String(id) in arrivals) continue;
+    const user = await get(`user:${id}`);
+    arrivals[String(id)] = user?.referralCode === code ? (Date.parse(user.joinedAt) || 0) : 0;
+  }
+  return arrivals;
 }
 
 // Funnel card of a visitor; users from before the card existed are rebuilt from what is still stored.
@@ -1172,13 +1196,15 @@ async function referralStats(code, payments = null) {
   const referral = await get(`referral:${code}`);
   if (!referral) return null;
   const event = (await get(`referral:${code}:events`)) || { clicks: 0 };
-  const visitors = await members(`referral:${code}:visitors`);
+  // Admins' own test visits are not ad traffic.
+  const visitors = (await members(`referral:${code}:visitors`)).filter((id) => !isAdmin(id));
   const paidBy = payments || await paymentsByUser();
+  const arrivals = await linkArrivals(code, visitors);
   const invalid = new Set((await members("users:invalid")).map(String));
   const s = { premium: 0, inactive: 0, trial: 0, caught: 0, events: 0, payers: 0, purchases: 0, paidAfterTrial: 0, lockedNoPay: 0, stars: 0, subscribed: 0 };
   for (const id of visitors) {
     const record = await refUserRecord(id);
-    const pay = paidBy[id];
+    const pay = paidSince(paidBy[id], arrivals[String(id)] || 0);
     if (record.premium === true) s.premium++;
     if (invalid.has(String(id))) s.inactive++;
     if (record.trialAt) s.trial++;
@@ -1426,7 +1452,7 @@ async function sendAdminStats(chatId, periodKey = "today", messageId = null) {
   const ids = await members("users:active");
   const [users, payments, invalidIds, trials, eventLists, referrals, referralCodes, referralVisits] = await Promise.all([
     Promise.all(ids.map((id) => get(`user:${id}`))).then((items) => items.filter(Boolean)),
-    Promise.all((await members("payments:ids")).map((id) => get(`payment:${id}`))).then((items) => items.filter(Boolean)),
+    Promise.all((await members("payments:ids")).filter((id) => !isManualGrant(id)).map((id) => get(`payment:${id}`))).then((items) => items.filter(Boolean)),
     members("users:invalid"),
     Promise.all(ids.map((id) => get(trialKey(id)))),
     Promise.all(ids.map((id) => get(`events:${id}`))),
@@ -1448,7 +1474,7 @@ async function sendAdminStats(chatId, periodKey = "today", messageId = null) {
   const premium = periodUsers.filter((user) => user.isPremium).length;
   const inactiveInPeriod = periodUsers.filter((user) => inactive.has(String(user.id))).length;
   const cohortPayers = new Set(periodPayments.filter((payment) => periodUserIds.has(String(payment.userId))).map((payment) => String(payment.userId)));
-  const ledger = referralVisits.map(referralLedgerEntry).filter(Boolean);
+  const ledger = referralVisits.map(referralLedgerEntry).filter((entry) => entry && !isAdmin(entry.userId));
   const periodVisits = ledger.filter((entry) => isInStatsPeriod(entry.at, period));
   const adSpend = period.key === "all"
     ? referrals.reduce((total, referral) => total + referral.totalCost, 0)
