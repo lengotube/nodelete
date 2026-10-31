@@ -331,6 +331,7 @@ async function recordEvent(ownerId, event) {
   await put(key, list.slice(0, EVENT_LIMIT));
   await addOwnerKey(ownerId, key);
   await trackRefUser(ownerId, (r) => { r.events = (r.events || 0) + 1; r.firstEventAt ||= Date.now(); });
+  await startTrialCountdown(ownerId);   // the first caught event starts the 3-day trial
 }
 
 // Ad-link funnel card for users who came by a referral link. Unlike the owner's events and trial,
@@ -437,7 +438,8 @@ async function personalSubscription(ownerId) {
 async function getAccessState(ownerId) {
   if (await personalSubscription(ownerId)) return { kind: "paid" };
   const trial = await get(trialKey(ownerId));
-  if (trial?.status === "active" && trial.endsAt > Date.now()) return { kind: "trial", trial };
+  // endsAt is empty until the first event starts the 3-day countdown.
+  if (trial?.status === "active" && (!trial.endsAt || trial.endsAt > Date.now())) return { kind: "trial", trial };
   return { kind: "locked", trial };
 }
 
@@ -482,10 +484,13 @@ async function startTrial(connection) {
   const existing = await get(key);
   if (existing) return null;
   const startedAt = Date.now();
+  // The 3 days are counted from the first event Ghost catches (startTrialCountdown),
+  // not from connecting: until then endsAt stays empty and access stays open.
   const trial = {
     status: "active",
     startedAt,
-    endsAt: startedAt + TRIAL_DURATION_MS,
+    endsAt: null,
+    countdownAt: null,
     connectionId: connection.id,
     userChatId: connection.userChatId
   };
@@ -498,6 +503,14 @@ async function startTrial(connection) {
   return trial;
 }
 
+// First caught event of a trial that has not started counting yet: the 3 days start now.
+async function startTrialCountdown(ownerId) {
+  const trial = await get(trialKey(ownerId));
+  if (trial?.status !== "active" || trial.endsAt) return;
+  const now = Date.now();
+  await put(trialKey(ownerId), { ...trial, countdownAt: now, endsAt: now + TRIAL_DURATION_MS }, null);
+}
+
 async function finishTrial(ownerId, trial) {
   if (!trial || trial.status !== "active") return;
   if (await personalSubscription(ownerId)) {
@@ -506,7 +519,8 @@ async function finishTrial(ownerId, trial) {
     return;
   }
   const events = (await get(`events:${ownerId}`)) || [];
-  const caught = events.filter((event) => event.at >= trial.startedAt && event.at < trial.endsAt).length;
+  const countFrom = trial.countdownAt || trial.startedAt;
+  const caught = events.filter((event) => event.at >= countFrom && event.at < trial.endsAt).length;
   const forecast = caught * (TRIAL_FORECAST_DAYS / 3);
   const ended = { ...trial, status: "ended", endedAt: Date.now(), caught };
   await put(trialKey(ownerId), ended, null);
@@ -599,7 +613,7 @@ async function activateTrialsForConnectedUsers() {
     await telegram("sendMessage", {
       chat_id: trial.userChatId || ownerId,
       parse_mode: "HTML",
-      text: `🎁 <b>Для вас активирован бесплатный пробный период на 3 дня.</b>\n\nДо ${new Date(trial.endsAt).toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" })} Ghost будет показывать содержимое новых доступных событий.`
+      text: `🎁 <b>Для вас активирован бесплатный пробный период на 3 дня.</b>\n\n3 дня начнут считаться с первого события, которое поймает Ghost, — до этого пробный период не тратится.`
     });
   });
 }
@@ -702,7 +716,8 @@ async function funnelPass() {
       await removeFromSet(trialActiveKey, ownerId);
       return;
     }
-    if (now >= trial.endsAt) await finishTrial(ownerId, trial);
+    // No endsAt yet = the countdown has not started (no event caught): keep the trial running.
+    if (trial.endsAt && now >= trial.endsAt) await finishTrial(ownerId, trial);
   });
 }
 
@@ -1045,7 +1060,7 @@ async function storeConnection(connection) {
     await addToSet("business:enabled", ownerId);
     const trial = await startTrial(data);
     const trialText = trial
-      ? `\n\n🎁 <b>Пробный период активирован на 3 дня.</b> До ${new Date(trial.endsAt).toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" })} Ghost будет показывать содержимое новых доступных событий бесплатно.`
+      ? `\n\n🎁 <b>Пробный период — 3 дня.</b> Отсчёт начнётся с первого события, которое поймает Ghost: до этого пробный период не тратится.`
       : "";
     await notifyOwner(connection.user_chat_id,
       `<tg-emoji emoji-id="5411126895620167819">✅</tg-emoji> <b>${escapeHtml(BRAND)} подключён и готов к работе.</b>\n\nЯ буду присылать уведомления, если Telegram передаст мне событие удаления или изменения в чатах, которые вы разрешили. Старые сообщения до подключения недоступны.${trialText}`
