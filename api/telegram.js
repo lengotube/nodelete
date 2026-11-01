@@ -300,23 +300,45 @@ const messagePreview = (message) => {
   if (message.text) return message.text;
   if (message.caption) return message.caption;
   if (message.photo) return "📷 Фото";
+  if (message.animation) return "🎞 Анимация";
   if (message.video) return "🎬 Видео";
+  if (message.video_note) return "⭕ Видеосообщение (кружок)";
   if (message.voice) return "🎤 Голосовое сообщение";
+  if (message.audio) return "🎵 Аудиофайл";
   if (message.document) return `📎 ${message.document.file_name || "Документ"}`;
   return "Сообщение без текстового содержимого";
 };
 
-// Telegram exposes spoiler-covered media to a connected business bot with a regular
-// file_id and the has_media_spoiler marker. Store only that Telegram file reference;
-// bytes never pass through or live on the Ghost server.
-const spoilerMediaSnapshot = (message) => {
-  if (!message?.has_media_spoiler) return null;
-  if (Array.isArray(message.photo) && message.photo.length) return { kind: "photo", fileId: message.photo.at(-1).file_id };
-  if (message.video?.file_id) return { kind: "video", fileId: message.video.file_id };
-  if (message.animation?.file_id) return { kind: "animation", fileId: message.animation.file_id };
-  if (message.document?.file_id) return { kind: "document", fileId: message.document.file_id, name: message.document.file_name || null };
+// Capture every supported attachment while the original message still exists.
+// The deletion update contains only message IDs, so its file_id must be saved
+// beforehand. Reuse Telegram's file reference without downloading media bytes.
+const mediaSnapshot = (message) => {
+  if (!message) return null;
+  const hasSpoiler = Boolean(message.has_media_spoiler);
+  if (Array.isArray(message.photo) && message.photo.length) {
+    const photo = message.photo.reduce((largest, next) =>
+      (Number(next.width) || 0) * (Number(next.height) || 0) >= (Number(largest.width) || 0) * (Number(largest.height) || 0) ? next : largest
+    );
+    if (photo.file_id) return { kind: "photo", fileId: photo.file_id, hasSpoiler };
+  }
+  // Telegram also supplies document for animations. Preserve the native kind.
+  for (const kind of ["animation", "video", "video_note", "voice", "audio", "document"]) {
+    const media = message[kind];
+    if (!media?.file_id) continue;
+    return {
+      kind,
+      fileId: media.file_id,
+      hasSpoiler,
+      ...(media.file_name ? { name: media.file_name } : {})
+    };
+  }
   return null;
 };
+
+// Older records contain only hiddenMedia and have no hasSpoiler flag.
+const storedMedia = (record) => record?.media || (record?.hiddenMedia ? { ...record.hiddenMedia, hasSpoiler: true } : null);
+const canSaveMedia = (media, settings) => Boolean(media?.fileId && (!media.hasSpoiler || settings.saveSpoilerMedia));
+const canSendMedia = (media, settings) => canSaveMedia(media, settings) && (!media.hasSpoiler || settings.sendSpoilerMedia);
 
 const isLiveLocationUpdate = (message) => Boolean(message?.location && Number(message.location.live_period) > 0);
 
@@ -352,52 +374,62 @@ async function trackRefUser(userId, update) {
 const senderName = (message) => [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ") || "Собеседник";
 const notifyOwner = (chatId, text) => telegram("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } });
 
-const MEDIA_CAPTION_FALLBACK = "<b>Ghost сохранил скрытое медиа.</b>";
+const MEDIA_CAPTION_FALLBACK = "<b>Ghost сохранил медиа.</b>";
 
-async function sendSavedSpoilerMedia(chatId, media, caption = MEDIA_CAPTION_FALLBACK) {
+async function sendSavedMedia(chatId, media, caption = MEDIA_CAPTION_FALLBACK, replyToMessageId = null) {
   if (!media?.fileId) return { sent: false, captionAttached: false };
-  const methodByKind = { photo: "sendPhoto", video: "sendVideo", animation: "sendAnimation", document: "sendDocument" };
-  const fieldByKind = { photo: "photo", video: "video", animation: "animation", document: "document" };
+  const methodByKind = { photo: "sendPhoto", video: "sendVideo", animation: "sendAnimation", document: "sendDocument", voice: "sendVoice", video_note: "sendVideoNote", audio: "sendAudio" };
   const method = methodByKind[media.kind];
-  const field = fieldByKind[media.kind];
-  if (!method || !field) return { sent: false, captionAttached: false };
+  if (!method) return { sent: false, captionAttached: false };
+  const supportsCaption = media.kind !== "video_note";
   const payload = (caption) => ({
     chat_id: chatId,
-    [field]: media.fileId,
-    caption,
-    parse_mode: "HTML"
+    [media.kind]: media.fileId,
+    ...(supportsCaption ? { caption, parse_mode: "HTML" } : {}),
+    ...(replyToMessageId ? { reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } } : {})
   });
   try {
     await telegram(method, payload(caption));
-    return { sent: true, captionAttached: true };
+    return { sent: true, captionAttached: supportsCaption };
   } catch (error) {
     // Captions have a stricter Telegram limit than regular messages. Keep the
     // media in the event even for a long edited-message diff, then send that
     // full diff below as a normal message.
-    if (caption !== MEDIA_CAPTION_FALLBACK) {
+    if (supportsCaption && caption !== MEDIA_CAPTION_FALLBACK && /caption|parse entities|entity|custom.emoji/i.test(String(error.message))) {
       try {
         await telegram(method, payload(MEDIA_CAPTION_FALLBACK));
         return { sent: true, captionAttached: false };
       } catch (fallbackError) {
-        console.error("Saved spoiler media delivery failed", fallbackError);
+        console.error("Saved media delivery failed", fallbackError);
       }
     } else {
-      console.error("Saved spoiler media delivery failed", error);
+      console.error("Saved media delivery failed", error);
     }
     return { sent: false, captionAttached: false };
   }
 }
 
-async function notifyEventWithMedia(connection, event, text) {
-  const settings = await userSettings(connection.ownerId);
-  if (settings.saveSpoilerMedia && settings.sendSpoilerMedia && event.hiddenMedia) {
-    const delivery = await sendSavedSpoilerMedia(connection.userChatId, event.hiddenMedia, text);
+async function deliverEventNotice(chatId, event, text, settings) {
+  const media = storedMedia(event);
+  if (canSendMedia(media, settings)) {
+    // Telegram does not accept captions for video notes. Keep the round-video
+    // format and attach it as a reply to its own deletion/edit notification.
+    if (media.kind === "video_note") {
+      const notice = await notifyOwner(chatId, text);
+      await sendSavedMedia(chatId, media, undefined, notice.message_id);
+      return;
+    }
+    const delivery = await sendSavedMedia(chatId, media, text);
     if (delivery.sent) {
-      if (!delivery.captionAttached) await notifyOwner(connection.userChatId, text);
+      if (!delivery.captionAttached) await notifyOwner(chatId, text);
       return;
     }
   }
-  await notifyOwner(connection.userChatId, text);
+  await notifyOwner(chatId, text);
+}
+
+async function notifyEventWithMedia(connection, event, text) {
+  return deliverEventNotice(connection.userChatId, event, text, await userSettings(connection.ownerId));
 }
 
 const trialKey = (ownerId) => `trial:${ownerId}`;
@@ -567,16 +599,11 @@ async function deliverLockedEvents(ownerId, chatId) {
   if (!events.length) return;
   const delivered = events.slice(0, 10);
   const settings = await userSettings(ownerId);
-  const withoutMedia = [];
   await notifyOwner(chatId, "<b>События, сохранённые после триала</b>");
   for (const event of delivered) {
     const text = event.type === "edited" ? editedMessageNotice(event) : deletedMessageNotice(event);
-    const delivery = settings.saveSpoilerMedia && settings.sendSpoilerMedia && event.hiddenMedia
-      ? await sendSavedSpoilerMedia(chatId, event.hiddenMedia, text)
-      : { sent: false, captionAttached: false };
-    if (!delivery.sent || !delivery.captionAttached) withoutMedia.push(text);
+    await deliverEventNotice(chatId, event, text, settings);
   }
-  if (withoutMedia.length) await notifyOwner(chatId, withoutMedia.join("\n\n").slice(0, 4000));
   await remove(key);
 }
 
@@ -947,8 +974,8 @@ async function saveBusinessMessage(message) {
     timestamp: message.date,
     savedAt: new Date().toISOString()
   };
-  const hiddenMedia = settings.saveSpoilerMedia ? spoilerMediaSnapshot(message) : null;
-  if (hiddenMedia) snapshot.hiddenMedia = hiddenMedia;
+  const media = mediaSnapshot(message);
+  if (canSaveMedia(media, settings)) snapshot.media = media;
   await put(key, snapshot);
   if (connection?.ownerId) {
     await addOwnerKey(connection.ownerId, key);
@@ -974,6 +1001,7 @@ async function processEditedBusinessMessage(message) {
   if (!connection?.enabled) return;
   if (!previous || String(message.from?.id) === String(connection.ownerId) || String(previous.senderId) === String(connection.ownerId)) return;
   const settings = await userSettings(connection.ownerId);
+  const media = storedMedia(previous) || mediaSnapshot(message);
   const event = {
     type: "edited",
     chatId: message.chat.id,
@@ -983,7 +1011,7 @@ async function processEditedBusinessMessage(message) {
     senderId: message.from?.id || previous.senderId || null,
     text: clip(messagePreview(message)),
     previous: clip(previous.text),
-    hiddenMedia: settings.saveSpoilerMedia ? previous.hiddenMedia || spoilerMediaSnapshot(message) : null,
+    media: canSaveMedia(media, settings) ? media : null,
     occurredAt: Date.now()
   };
   await recordEvent(connection.ownerId, event);
@@ -1031,7 +1059,7 @@ async function processDeletedBusinessMessages(deleted) {
       username: previous.username || null,
       senderId: previous.senderId || null,
       text: clip(previous.text),
-      hiddenMedia: previous.hiddenMedia || null,
+      media: storedMedia(previous),
       occurredAt: Date.now()
     };
     await recordEvent(connection.ownerId, event);
