@@ -2269,6 +2269,7 @@ export async function getDashboard(ownerId, { tzOffset = 0, limit = EVENT_LIMIT 
   if (!connected) return { connected: false };
   const events = (await get(`events:${ownerId}`)) || [];
   const access = await getAccessState(ownerId);
+  const subscription = access.kind === "paid" ? await personalSubscription(ownerId) : null;
   const chats = (await members(`owner:${ownerId}:chats`)).length;
   const offsetMs = (Number(tzOffset) || 0) * 60 * 1000;
   const localNow = new Date(Date.now() - offsetMs);
@@ -2284,6 +2285,8 @@ export async function getDashboard(ownerId, { tzOffset = 0, limit = EVENT_LIMIT 
     today,
     access: access.kind,
     trial: access.trial ? { status: access.trial.status, startedAt: access.trial.startedAt, endsAt: access.trial.endsAt } : null,
+    // expiresAt null = permanent access.
+    subscription: subscription ? { plan: subscription.plan, title: PLANS[String(subscription.plan).replace(/_regular$/, "")]?.title || (subscription.plan === "vip" ? "VIP" : null), expiresAt: subscription.expiresAt ?? null } : null,
     events: visibleEvents
   };
 }
