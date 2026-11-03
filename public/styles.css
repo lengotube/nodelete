@@ -207,13 +207,14 @@ body.light .tag.del { background: #fbd9d9; color: #c93a3a; }
 .payment-methods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0 0 14px; }
 .payment-method { display: flex; min-height: 48px; align-items: center; justify-content: center; gap: 6px; padding: 8px 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--muted); font-size: 13px; font-weight: 600; }
 .payment-method.selected { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
-.sbp-logo { display: inline-grid; min-width: 24px; min-height: 20px; place-items: center; border-radius: 5px; background: linear-gradient(135deg,#22a861 0 42%,#18a6d8 42% 62%,#f3a13b 62%); color: #fff; font-size: 8px; font-weight: 800; letter-spacing: -.7px; line-height: 1; }
 .bitcoin-logo { display: inline-grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; background: #f7931a; color: #fff; font-size: 16px; font-weight: 700; line-height: 1; }
 .checkout-action { display: flex; width: 100%; min-height: 54px; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; border-radius: var(--radius); color: var(--on-accent); font-size: 16px; font-weight: 700; }
 .checkout-action.stars { background: var(--accent); }
-.checkout-action.sbp { background: #1877c9; }
+.checkout-action.card { background: #1877c9; }
 .checkout-action.crypto { background: linear-gradient(135deg,#eb8818,#f5a432); }
-.checkout-action .sbp-logo { min-width: 29px; min-height: 24px; font-size: 9px; }
+.checkout-action .icon { width: 22px; height: 22px; }
+.checkout-action:disabled { opacity: .65; cursor: wait; }
+.card-terms { margin: 14px 4px 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
 .checkout-action .bitcoin-logo { width: 25px; height: 25px; font-size: 18px; background: rgba(255,255,255,.2); border: 1px solid rgba(255,255,255,.32); }
 
 /* Groups */
@@ -232,7 +233,7 @@ body.light .tag.del { background: #fbd9d9; color: #c93a3a; }
 .group-package i { display: grid; width: 24px; height: 24px; place-items: center; border: 2px solid var(--line); border-radius: 50%; color: #fff; font-size: 13px; font-style: normal; }
 .group-package.selected i { border-color: var(--accent); background: var(--accent); }
 .group-pay-stub, .group-pay-stars { display: flex; width: 100%; align-items: center; justify-content: center; min-height: 52px; margin-top: 14px; border-radius: var(--radius); font-size: 16px; font-weight: 600; }
-.group-pay-stub { background: var(--surface2); color: var(--text); }
+.group-pay-stub { gap: 8px; background: var(--surface2); color: var(--text); }
 .group-pay-stars { margin-top: 8px; background: var(--accent); color: var(--on-accent); }
 
 /* Language sheet */

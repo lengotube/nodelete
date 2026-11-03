@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { renameSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -518,8 +518,8 @@ async function startTrial(connection) {
   const existing = await get(key);
   if (existing) return null;
   const startedAt = Date.now();
-  // The 3 days are counted from the first event Ghost catches (startTrialCountdown),
-  // not from connecting: until then endsAt stays empty and access stays open.
+  // New trials last three calendar days from connection. Older trials that
+  // already promised a first-event countdown keep their existing terms.
   const trial = {
     status: "active",
     startedAt,
@@ -539,6 +539,10 @@ async function startTrial(connection) {
 
 // First caught event of a trial that has not started counting yet: the 3 days start now.
 async function startTrialCountdown(ownerId) {
+  return withSubscriptionLock(ownerId, () => startTrialCountdownLocked(ownerId));
+}
+
+async function startTrialCountdownLocked(ownerId) {
   const trial = await get(trialKey(ownerId));
   if (trial?.status !== "active" || trial.endsAt) return;
   const now = Date.now();
@@ -546,6 +550,15 @@ async function startTrialCountdown(ownerId) {
 }
 
 async function finishTrial(ownerId, trial) {
+  return withSubscriptionLock(ownerId, async () => {
+    // The trial may have been converted while this task waited for a payment.
+    const latest = await get(trialKey(ownerId));
+    if (!latest || latest.status !== "active") return;
+    return finishTrialLocked(ownerId, latest);
+  });
+}
+
+async function finishTrialLocked(ownerId, trial) {
   if (!trial || trial.status !== "active") return;
   if (await personalSubscription(ownerId)) {
     await put(trialKey(ownerId), { ...trial, status: "converted", convertedAt: Date.now() }, null);
@@ -565,9 +578,9 @@ async function finishTrial(ownerId, trial) {
     : "За время пробного периода Ghost не получил доступных событий. Он продолжит сообщать о новых событиях без показа содержимого, пока не будет выбран тариф.";
   await telegram("sendMessage", {
     chat_id: trial.userChatId || ownerId,
-    text: `<b>Пробный период завершён</b>\n\n${summary}\n\nGhost продолжит фиксировать новые доступные события. Выберите тариф, чтобы видеть их содержимое.`,
+    text: `<b>Пробный период завершён</b>\n\n${summary}\n\nGhost продолжит фиксировать новые доступные события. Выберите тариф, чтобы видеть их содержимое.${cardCheckoutConfigured() ? "\n\n<b>Специальное предложение:</b> 7 дней за 10 ₽. Условия предложения — на странице оплаты." : ""}`,
     parse_mode: "HTML",
-    reply_markup: planKeyboard()
+    reply_markup: cardCheckoutConfigured() ? { inline_keyboard: [[{ text: "7 дней за 10 ₽", callback_data: "card_offer" }], ...planKeyboard().inline_keyboard] } : planKeyboard()
   });
 }
 
@@ -763,6 +776,22 @@ const planFromPayload = (payload, paidAmount = null) => {
 
 const subscriptionKeyFor = (userId, plan) => plan.scope === "groups" ? `group-subscription:${userId}` : `subscription:${userId}`;
 const durationMs = (days) => days * 24 * 60 * 60 * 1000;
+const CARD_PLANS = {
+  lite: { initial: 10, renewal: 79, days: 7, months: 0, label: "7 дней" },
+  lite_regular: { initial: 79, renewal: 79, days: 7, months: 0, label: "7 дней" },
+  plus: { initial: 179, renewal: 179, days: 0, months: 1, label: "1 месяц" },
+  quarter: { initial: 449, renewal: 449, days: 0, months: 3, label: "3 месяца" },
+  prime: { initial: 1290, renewal: 1290, days: 0, months: 12, label: "1 год" }
+};
+function addCardPeriod(start, plan) {
+  if (plan.days) return start + durationMs(plan.days);
+  const date = new Date(start), day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + plan.months);
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, lastDay));
+  return date.getTime();
+}
 const expiryForPurchase = (current, plan) => plan.days ? Math.max(Date.now(), Number(current?.expiresAt) || 0) + durationMs(plan.days) : null;
 
 const cryptoPriceRub = (plan) => Math.round(plan.stars * 1.1);
@@ -773,6 +802,155 @@ const constantEqual = (left, right) => {
   const b = Buffer.from(String(right || ""));
   return a.length === b.length && timingSafeEqual(a, b);
 };
+
+function cardCheckoutConfigured() {
+  return Boolean(process.env.GHOST_CHECKOUT_INTERNAL_URL && process.env.GHOST_CHECKOUT_PUBLIC_ORIGIN && process.env.GHOST_CHECKOUT_SECRET && process.env.GHOST_EVENT_SECRET);
+}
+
+// All paths that extend the same user's subscription share one process-local
+// queue. The VPS runner is intentionally single-process; this prevents two
+// simultaneous providers (or an admin grant) overwriting each other's terms.
+const subscriptionLocks = new Map();
+async function withSubscriptionLock(ownerId, task) {
+  const key = String(ownerId);
+  const previous = subscriptionLocks.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(task);
+  subscriptionLocks.set(key, current);
+  try { return await current; }
+  finally { if (subscriptionLocks.get(key) === current) subscriptionLocks.delete(key); }
+}
+
+async function cardCheckoutRequest(action, ownerId, planId = "lite") {
+  if (!cardCheckoutConfigured()) throw new Error("Карточная подписка временно недоступна.");
+  const base = new URL(process.env.GHOST_CHECKOUT_INTERNAL_URL);
+  if (base.protocol !== "https:" && !(base.protocol === "http:" && ["127.0.0.1", "localhost", "::1", "[::1]"].includes(base.hostname))) throw new Error("Небезопасный адрес платёжного сервиса.");
+  if (!["checkout", "status", "cancel"].includes(action)) throw new Error("Неизвестная операция.");
+  const path = `/internal/ghost/${action}`;
+  const raw = JSON.stringify(action === "checkout" ? { user_id: Number(ownerId), plan: planId } : { user_id: Number(ownerId) });
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = createHmac("sha256", process.env.GHOST_CHECKOUT_SECRET).update(`${timestamp}.POST.${path}.${raw}`).digest("hex");
+  const response = await fetch(new URL(path, base), {
+    method: "POST", headers: { "content-type": "application/json", "X-Ghost-Timestamp": timestamp, "X-Ghost-Signature": signature }, body: raw,
+    signal: AbortSignal.timeout(10000)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (action === "checkout" && ["offer_already_used", "subscription_exists"].includes(data.error)) throw Object.assign(new Error("Это предложение уже использовано или карточная подписка уже оформлена."), { code: "offer_unavailable" });
+  if (!response.ok || data.ok !== true) throw new Error("Платёжный сервис временно недоступен. Попробуйте позже или обратитесь в поддержку.");
+  return data;
+}
+
+export async function getCardQuote(ownerId) {
+  const trial = await get(trialKey(ownerId));
+  const subscription = await personalSubscription(ownerId);
+  const trialEnded = trial?.status === "ended" || (trial?.status === "active" && Number.isFinite(Number(trial.endsAt)) && Number(trial.endsAt) > 0 && Number(trial.endsAt) <= Date.now());
+  const status = await cardCheckoutRequest("status", ownerId);
+  const promo = Boolean(trialEnded && !subscription && status.offer_used === false);
+  return { weeklyPlan: promo ? "lite" : "lite_regular", weeklyPrice: promo ? 10 : 79 };
+}
+
+export async function createCardCheckout(ownerId, planId = "lite") {
+  if (!Number.isSafeInteger(Number(ownerId)) || Number(ownerId) <= 0) throw Object.assign(new Error("Неверный пользователь."), { code: "offer_unavailable" });
+  if (!Object.hasOwn(CARD_PLANS, planId)) throw Object.assign(new Error("Тариф недоступен."), { code: "offer_unavailable" });
+  if (planId === "lite" && (await getCardQuote(ownerId)).weeklyPlan !== "lite") throw Object.assign(new Error("Предложение недоступно. Обновите тарифы."), { code: "offer_unavailable" });
+  if ((await personalSubscription(ownerId))?.expiresAt === null) throw Object.assign(new Error("Предложение недоступно для вашей подписки."), { code: "offer_unavailable" });
+  const data = await cardCheckoutRequest("checkout", ownerId, planId);
+  const url = new URL(data.url);
+  const expectedOrigin = new URL(process.env.GHOST_CHECKOUT_PUBLIC_ORIGIN).origin;
+  if (url.protocol !== "https:" || url.origin !== expectedOrigin || url.username || url.password) throw new Error("Invalid checkout URL");
+  return { url: url.toString() };
+}
+
+// Commit an event and entitlement together in the single-process local store.
+// Reject other storage backends rather than risk crediting an event twice.
+export async function processCardPaymentEvent(headers, rawBody) {
+  const secret = process.env.GHOST_EVENT_SECRET;
+  const timestamp = String(headers["x-ghost-timestamp"] || "");
+  const supplied = String(headers["x-ghost-signature"] || "");
+  if (!secret || !/^\d{10}$/.test(timestamp) || Math.abs(Date.now() / 1000 - Number(timestamp)) > 300 || !/^[a-f0-9]{64}$/i.test(supplied)) throw new Error("Invalid event authentication");
+  const raw = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody));
+  const expected = createHmac("sha256", secret).update(`${timestamp}.POST./api/card-payment-event.`).update(raw).digest("hex");
+  if (!constantEqual(supplied.toLowerCase(), expected)) throw new Error("Invalid event authentication");
+  let event;
+  try { event = JSON.parse(raw.toString("utf8")); } catch { throw new Error("Invalid event body"); }
+  const planId = event.plan || "lite", cardPlan = Object.hasOwn(CARD_PLANS, planId) ? CARD_PLANS[planId] : null;
+  if (!/^cp:[A-Za-z0-9_-]{1,100}$/.test(String(event.event_id || "")) || !Number.isSafeInteger(event.user_id) || event.user_id <= 0 ||
+      !cardPlan || !["initial", "renewal"].includes(event.kind) || event.amount !== cardPlan[event.kind] || event.currency !== "RUB" || event.period_days !== cardPlan.days || (event.period_months ?? 0) !== cardPlan.months ||
+      typeof event.invoice_id !== "string" || !event.invoice_id || event.invoice_id.length > 200 || typeof event.paid_at !== "string" || !Number.isFinite(Date.parse(event.paid_at)) || Date.parse(event.paid_at) > Date.now() + 300000) throw new Error("Invalid payment event");
+  if (process.env.KV_REST_API_URL || process.env.KV_REST_API_TOKEN) throw new Error("Card event atomic storage is unavailable");
+  return withSubscriptionLock(event.user_id, () => commitCardPaymentEvent(event));
+}
+
+async function commitCardPaymentEvent(event) {
+  const store = await loadStore();
+  const now = Date.now();
+  const eventKey = `card:payment:${event.event_id}`;
+  const existing = liveString(store, eventKey, now)?.value;
+  if (existing) {
+    const previous = unseal(existing);
+    if (previous.userId !== event.user_id || previous.invoiceId !== event.invoice_id || previous.kind !== event.kind || previous.amount !== event.amount || (previous.plan || "lite") !== (event.plan || "lite")) throw new Error("Payment event conflict");
+    // A concurrent retry must wait until the first event reaches disk.
+    flushChain = flushChain.catch(() => {}).then(flushStore);
+    await flushChain;
+    return { ok: true, duplicate: true };
+  }
+  const subscriptionKey = `subscription:${event.user_id}`;
+  const encryptedSubscription = liveString(store, subscriptionKey, now)?.value;
+  const subscription = encryptedSubscription ? unseal(encryptedSubscription) : null;
+  const permanent = subscription?.expiresAt === null;
+  const planId = event.plan || "lite", cardPlan = CARD_PLANS[planId];
+  const expiresAt = permanent ? null : addCardPeriod(Math.max(now, Number(subscription?.expiresAt) || 0), cardPlan);
+  const payment = { eventId: event.event_id, userId: event.user_id, invoiceId: event.invoice_id, kind: event.kind, amount: event.amount, currency: "RUB", periodDays: cardPlan.days, periodMonths: cardPlan.months, plan: planId, purchasedAt: event.paid_at, provider: "cloudpayments", status: permanent ? "needs_review" : "confirmed" };
+  if (!permanent) {
+    const seconds = Math.max(1, Math.ceil((expiresAt - now) / 1000));
+    applyCommand(store, ["SET", subscriptionKey, seal({ plan: planId, scope: "personal", expiresAt, chargeId: event.event_id, purchasedAt: event.paid_at, provider: "cloudpayments" }), "EX", seconds], now);
+    const trialKeyName = trialKey(event.user_id);
+    const encryptedTrial = liveString(store, trialKeyName, now)?.value;
+    const trial = encryptedTrial ? unseal(encryptedTrial) : null;
+    if (trial?.status === "active") applyCommand(store, ["SET", trialKeyName, seal({ ...trial, status: "converted", convertedAt: now })], now);
+    applyCommand(store, ["SREM", trialActiveKey, String(event.user_id)], now);
+  }
+  applyCommand(store, ["SET", eventKey, seal(payment)], now);
+  applyCommand(store, ["SET", `payment:${event.event_id}`, seal(payment)], now);
+  applyCommand(store, ["SADD", "card:payments:ids", event.event_id], now);
+  applyCommand(store, ["SADD", "payments:ids", event.event_id], now);
+  flushChain = flushChain.catch(() => {}).then(flushStore);
+  await flushChain;
+  if (!permanent) {
+    await notifyOwner(event.user_id, `<b>Оплата получена.</b> Доступ продлён до ${escapeHtml(new Date(expiresAt).toLocaleDateString("ru-RU"))}.`).catch((error) => console.error("Card payment notification failed", error));
+    await deliverLockedEvents(event.user_id, event.user_id).catch((error) => console.error("Locked event delivery failed after card payment", error));
+  } else {
+    console.error("Card payment requires review: account already has permanent access", event.event_id);
+    await notifyOwner(event.user_id, "Оплата получена, но у вас уже есть бессрочный доступ. Обратитесь в поддержку для проверки платежа.").catch(() => null);
+  }
+  return { ok: true, duplicate: false, needsReview: permanent };
+}
+
+async function showCardSubscription(chatId, ownerId) {
+  if (!cardCheckoutConfigured()) return telegram("sendMessage", { chat_id: chatId, text: "Управление карточной подпиской временно недоступно. Обратитесь в поддержку." });
+  try {
+    const { subscription } = await cardCheckoutRequest("status", ownerId);
+    if (!subscription) return telegram("sendMessage", { chat_id: chatId, text: "Карточная подписка не найдена. Тарифы Ghost, оплаченные Stars, разовые и не продлеваются автоматически." });
+    if (!["creating", "active", "pastdue", "cancellation_pending", "cancelled", "expired", "rejected", "needs_review"].includes(subscription.status)) throw new Error("Unknown subscription status");
+    if (subscription.status === "creating") return telegram("sendMessage", { chat_id: chatId, text: "Ожидается подтверждение платежа. Если есть вопросы, обратитесь в поддержку." });
+    if (subscription.status === "needs_review") return telegram("sendMessage", { chat_id: chatId, text: "Статус платежа требует проверки. Обратитесь в поддержку." });
+    if (subscription.status === "rejected") return telegram("sendMessage", { chat_id: chatId, text: "Платёж не завершён. Действующей карточной подписки нет." });
+    if (subscription.status === "cancellation_pending") return telegram("sendMessage", { chat_id: chatId, text: "Отмена обрабатывается. Пока подтверждение не получено, обратитесь в поддержку или повторите проверку статуса.", reply_markup: { inline_keyboard: [[{ text: "Проверить статус", callback_data: "card_subscription" }]] } });
+    const active = subscription.status === "active" || subscription.status === "pastdue";
+    const plan = CARD_PLANS[subscription.plan || "lite"];
+    if (!plan || subscription.amount !== plan.renewal) throw new Error("Unknown subscription plan");
+    const date = Date.parse(subscription.next_at);
+    const next = active && Number.isFinite(date) ? `\nСледующее списание: ${escapeHtml(new Date(date).toLocaleString("ru-RU"))}.` : "";
+    const state = active ? "Автопродление включено." : "Автопродление отключено.";
+    return telegram("sendMessage", {
+      chat_id: chatId, parse_mode: "HTML",
+      text: `<b>Управление подпиской</b>\n\n${state}${active ? `\nСтоимость: ${plan.renewal} ₽ каждые ${plan.label}.` : ""}${next}\n\nОплаченный доступ сохраняется до окончания срока. Для изменения тарифа обратитесь в поддержку.`,
+      ...(active ? { reply_markup: { inline_keyboard: [[{ text: "Отменить автопродление", callback_data: "card_cancel_ask" }]] } } : {})
+    });
+  } catch (error) {
+    console.error("Card subscription status failed", error);
+    return telegram("sendMessage", { chat_id: chatId, text: "Не удалось получить статус подписки. Попробуйте позже или обратитесь в поддержку." });
+  }
+}
 
 async function plategaRequest(path, options = {}) {
   const merchantId = process.env.PLATEGA_MERCHANT_ID;
@@ -789,7 +967,7 @@ async function plategaRequest(path, options = {}) {
 
 export async function createCryptoCheckout(user, planId) {
   const plan = PLANS[planId];
-  if (!plan || plan.scope !== "personal") throw new Error("Этот тариф нельзя оплатить криптовалютой.");
+  if (!plan || plan.scope !== "personal" || plan.legacy) throw new Error("Этот тариф нельзя оплатить криптовалютой.");
   if (!APP_URL) throw new Error("Адрес Mini App не настроен. Обратитесь в поддержку.");
   const current = await personalSubscription(user.id);
   if (current?.expiresAt === null && plan.days) throw new Error("У вас уже активен бессрочный тариф Ultra.");
@@ -822,6 +1000,12 @@ export async function createCryptoCheckout(user, planId) {
 }
 
 async function activateCryptoOrder(transactionId, transaction = {}) {
+  const order = await get(cryptoOrderKey(transactionId));
+  if (!order) return { kind: "unknown" };
+  return withSubscriptionLock(order.userId, () => activateCryptoOrderLocked(transactionId, transaction));
+}
+
+async function activateCryptoOrderLocked(transactionId, transaction = {}) {
   const order = await get(cryptoOrderKey(transactionId));
   if (!order) return { kind: "unknown" };
   const plan = PLANS[order.planId];
@@ -921,6 +1105,10 @@ async function sendStarsInvoice(chatId, planId) {
 }
 
 async function completeStarsPayment(message) {
+  return withSubscriptionLock(message.from.id, () => completeStarsPaymentLocked(message));
+}
+
+async function completeStarsPaymentLocked(message) {
   const payment = message.successful_payment;
   const plan = planFromPayload(payment.invoice_payload, payment.total_amount);
   if (!plan || payment.currency !== "XTR" || payment.total_amount !== plan.issuedStars) return sendPaymentReviewAlert(message, plan);
@@ -1729,6 +1917,10 @@ const vipTargetFromMessage = (message) => {
 };
 
 async function grantVip(adminId, target, days) {
+  return withSubscriptionLock(target.id, () => grantVipLocked(adminId, target, days));
+}
+
+async function grantVipLocked(adminId, target, days) {
   const key = `subscription:${target.id}`;
   const current = await get(key);
   if (current?.expiresAt === null) return { kind: "permanent" };
@@ -1838,6 +2030,7 @@ async function commandHandler(message) {
   }
   if (publicRef) return telegram("sendMessage", { chat_id: message.chat.id, text: referralReport(await referralStats(publicRef[1].toLowerCase())), parse_mode: "HTML" });
   if (command === "/admin" && message.from && isAdmin(message.from.id)) return sendAdminPanel(message.chat.id);
+  if (command === "/unsub" && message.chat?.type === "private" && String(message.chat.id) === String(message.from?.id)) return showCardSubscription(message.chat.id, message.from.id);
   if (command === "/start") {
     await beginFunnel(message.from.id);
     if (argument === "settings") return sendInstruction(message.chat.id, message.from.id);
@@ -1875,6 +2068,31 @@ async function commandHandler(message) {
 
 async function callbackHandler(callback) {
   const [action, suppliedId, detail] = (callback.data || "").split(":");
+  if (["card_offer", "card_cancel_ask", "card_cancel_confirm", "card_subscription"].includes(action)) {
+    if (callback.message?.chat?.type !== "private" || String(callback.message.chat.id) !== String(callback.from.id)) return telegram("answerCallbackQuery", { callback_query_id: callback.id, text: "Откройте личный чат с ботом." });
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id });
+    const ownerId = callback.from.id;
+    if (action === "card_subscription") return showCardSubscription(ownerId, ownerId);
+    if (action === "card_cancel_ask") return telegram("sendMessage", { chat_id: ownerId, text: "Отключить автопродление? Оплаченный доступ сохранится до конца оплаченного срока.", reply_markup: { inline_keyboard: [[{ text: "Да, отключить", callback_data: "card_cancel_confirm" }], [{ text: "Назад", callback_data: "card_subscription" }]] } });
+    if (action === "card_cancel_confirm") {
+      try {
+        const data = await cardCheckoutRequest("cancel", ownerId);
+        if (data.status !== "cancelled") throw new Error("Cancellation not confirmed");
+        return telegram("sendMessage", { chat_id: ownerId, text: "Автопродление отключено. Оплаченный доступ сохранится до окончания срока." });
+      } catch (error) {
+        console.error("Card cancellation failed", error);
+        return telegram("sendMessage", { chat_id: ownerId, text: "Не удалось подтвердить отмену. Повторите попытку или обратитесь в поддержку." });
+      }
+    }
+    try {
+      const data = await createCardCheckout(ownerId);
+      return telegram("sendMessage", { chat_id: ownerId, parse_mode: "HTML", text: "<b>Специальное предложение: 7 дней за 10 ₽.</b> Условия предложения указаны на странице оплаты.", reply_markup: { inline_keyboard: [[{ text: "Открыть страницу оплаты", url: data.url }]] } });
+    } catch (error) {
+      if (error.code === "offer_unavailable") return telegram("sendMessage", { chat_id: ownerId, text: error.message });
+      console.error("Card checkout failed", error);
+      return telegram("sendMessage", { chat_id: ownerId, text: "Не удалось открыть страницу оплаты. Попробуйте позже или обратитесь в поддержку." });
+    }
+  }
   if (action === "free_trial_guide") {
     await telegram("answerCallbackQuery", { callback_query_id: callback.id });
     await updateFunnel(callback.from.id, "free_trial_reminder_clicked");

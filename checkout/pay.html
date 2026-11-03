@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Ghost — подписка</title>
+  <script src="https://widget.cloudpayments.ru/bundles/cloudpayments.js" defer></script>
+  <style>
+    :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0e0d15;color:#f7f5ff}
+    *{box-sizing:border-box}body{margin:0;padding:24px 16px 40px;background:radial-gradient(circle at 80% 0,#34215b 0,transparent 34%),#0e0d15}
+    main{max-width:430px;margin:auto}.brand{display:flex;align-items:center;gap:11px;font-size:24px;font-weight:800}
+    .avatar{width:44px;height:44px;border-radius:15px;object-fit:cover}
+    .card{margin-top:22px;padding:24px 20px;background:#17151f;border:1px solid #302b3e;border-radius:25px}
+    .pill{display:inline-block;border-radius:20px;background:#302348;color:#cbb8ff;padding:8px 11px;font-size:13px;font-weight:700}
+    h1{font-size:28px;line-height:1.12;margin:18px 0 10px}p{line-height:1.5;color:#c4bdcf}
+    .consent{display:flex;align-items:flex-start;gap:12px;margin:18px 0;color:#e4ddec;font-size:14px;line-height:1.45}
+    .consent small{display:block;margin-top:8px;color:#aaa1b6;font-size:13px;line-height:1.5}
+    input[type=checkbox]{appearance:none;flex:none;width:22px;height:22px;margin:1px 0 0;border:2px solid #8d7fa1;border-radius:6px;background:#1d1927}
+    input[type=checkbox]:checked{background:#856aff;border-color:#a38dff}input[type=checkbox]:checked:after{content:'✓';display:block;text-align:center;color:white;font-weight:800;font-size:17px;line-height:18px}
+    #email{appearance:auto;display:block;box-sizing:border-box;width:100%;height:auto;padding:14px;color:#f7f5ff;background:#24202f;border:1px solid #625779;border-radius:12px}
+    a{color:#bba7ff}button{width:100%;border:0;border-radius:16px;padding:17px;background:#8972fb;color:white;font-size:17px;font-weight:800;cursor:pointer}
+    button:disabled{background:#413a50;color:#aaa2b4;cursor:not-allowed}.hint{font-size:12px;color:#aaa1b6}.error{color:#ffb5bf;font-size:14px}.footer{text-align:center;font-size:12px;color:#958ca3}
+  </style>
+</head>
+<body>
+<main>
+  <div class="brand"><img class="avatar" id="avatar" alt=""> ghost</div>
+  <section class="card">
+    <span class="pill" id="plan-badge"></span>
+    <h1>Сохраняй то, что удаляют</h1>
+    <p id="terms-summary"></p>
+    <label for="email">Электронная почта для чека</label>
+    <input id="email" type="email" autocomplete="email" maxlength="254" required placeholder="name@example.com">
+    <label class="consent"><input id="offer" type="checkbox" autocomplete="off"><span>Принимаю <a id="offer-link" target="_blank" rel="noopener">оферту</a> и <a id="privacy-link" target="_blank" rel="noopener">политику конфиденциальности</a>.</span></label>
+    <label class="consent"><input id="recurring" type="checkbox" autocomplete="off"><span>Я ознакомлен и согласен с <a id="tariffs-link" target="_blank" rel="noopener">тарифами и правилами рекуррентных платежей</a>.<small id="terms-consent"></small></span></label>
+    <button id="pay" disabled>Оплатить</button>
+    <button id="retry" type="button" hidden>Попробовать ещё раз</button>
+    <p class="hint">Карту и чек обрабатывает CloudPayments. Отмена автопродления сохраняет оплаченный доступ до конца периода.</p>
+    <p id="error" class="error" role="alert"></p>
+  </section>
+  <p class="footer">Продавец: <span id="seller"></span> · <a id="support" target="_blank" rel="noopener">Поддержка</a></p>
+</main>
+<script>
+  const cfg=__CONFIG__, offer=document.querySelector('#offer'), recurring=document.querySelector('#recurring'), pay=document.querySelector('#pay'), retry=document.querySelector('#retry'), email=document.querySelector('#email'), error=document.querySelector('#error');
+  const plan=cfg.plan, term=`${plan.renew} ₽ ${plan.frequency}`;
+  document.querySelector('#plan-badge').textContent=plan.first===10?'СПЕЦИАЛЬНОЕ ПРЕДЛОЖЕНИЕ':'ПОДПИСКА GHOST';
+  document.querySelector('#terms-summary').textContent=`Сейчас ${plan.first} ₽ за ${plan.label}. Затем автопродление: ${term} до отмены.`;
+  document.querySelector('#terms-consent').textContent=`Согласен на оплату ${plan.first} ₽ сейчас и автоматические списания ${term} после окончания первого периода до отмены.`;
+  pay.textContent=`Оплатить ${plan.first} ₽`;
+  document.querySelector('#avatar').src=cfg.basePath+'/assets/ghost-avatar.png';document.querySelector('#tariffs-link').href=cfg.basePath+'/tariffs#recurrent';
+  document.querySelector('#offer-link').href=cfg.offer;document.querySelector('#privacy-link').href=cfg.privacy;document.querySelector('#support').href=cfg.support;document.querySelector('#seller').textContent=cfg.seller;
+  offer.checked=false;recurring.checked=false;let processing=false, prepared=null, generation=0, prepareTimer;
+  function refresh(){pay.disabled=processing||!offer.checked||!recurring.checked||!email.validity.valid||!prepared}
+  function update(autoOpen=false){
+    prepared=null;const current=++generation;clearTimeout(prepareTimer);retry.hidden=true;refresh();
+    if(!offer.checked||!recurring.checked||!email.validity.valid)return;
+    prepareTimer=setTimeout(async()=>{const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),10000);try{
+      const r=await fetch(cfg.basePath+'/pay/'+encodeURIComponent(cfg.token)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accept_offer:true,accept_recurring:true,email:email.value.trim()}),signal:controller.signal});
+      const data=await r.json();if(!r.ok||!data.ok)throw new Error('Не удалось подготовить оплату. Измените поле почты или попробуйте позже.');
+      if(current===generation){prepared=data;error.textContent='';refresh();if(autoOpen&&!pay.disabled)pay.click()}
+    }catch(e){if(current===generation){error.textContent='Не удалось подготовить оплату. Попробуйте ещё раз.';retry.hidden=false;refresh()}}finally{clearTimeout(timeout)}},250);
+  }
+  offer.addEventListener('change',()=>update(offer.checked&&recurring.checked));recurring.addEventListener('change',()=>update(offer.checked&&recurring.checked));email.addEventListener('input',()=>update(false));
+  retry.addEventListener('click',()=>update(false));
+  pay.addEventListener('click',()=>{
+    if(!offer.checked||!recurring.checked||!email.validity.valid||processing||!prepared)return;
+    const data=prepared;let fallback;processing=true;refresh();error.textContent='';
+    try{
+      if(!window.cp?.CloudPayments)throw new Error('Платёжная форма не загрузилась. Попробуй ещё раз.');
+      fallback=setTimeout(()=>{processing=false;error.textContent='Если форма оплаты не открылась, нажмите кнопку оплаты ещё раз.';refresh()},15000);
+      new cp.CloudPayments().pay('charge',{publicId:cfg.publicId,description:'Ghost — '+plan.label,amount:data.amount,currency:data.currency,accountId:data.account_id,invoiceId:data.invoice_id,email:data.email,skin:'mini',saveCard:true,requireEmail:true,data:{CloudPayments:{CustomerReceipt:data.receipt}}},{
+        onSuccess:()=>{clearTimeout(fallback);error.style.color='#b7f4c7';error.textContent='Платёж отправлен на проверку. Доступ включится после подтверждения.'},
+        onFail:()=>{clearTimeout(fallback);error.textContent='Оплата не завершена. Попробуй ещё раз.'},
+        onComplete:()=>{clearTimeout(fallback);processing=false;refresh()}
+      });
+    }catch(e){clearTimeout(fallback);error.textContent=e.message||'Не удалось открыть оплату.';processing=false;refresh()}
+  });
+</script>
+</body>
+</html>

@@ -10,7 +10,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { checkCryptoCheckout, createCryptoCheckout, getDashboard, getLedgerExport, processPlategaCallback, trackFunnelEvent } from "../api/telegram.js";
+import { checkCryptoCheckout, createCardCheckout, createCryptoCheckout, getCardQuote, getDashboard, getLedgerExport, processCardPaymentEvent, processPlategaCallback, trackFunnelEvent } from "../api/telegram.js";
 
 const MAX_AGE_SECONDS = 24 * 60 * 60;
 
@@ -79,6 +79,17 @@ export function startDashboardApi({ port = Number(process.env.DASHBOARD_PORT) ||
     const path = new URL(request.url, "http://localhost").pathname;
     if (path === "/health") return send(response, 200, { ok: true });
     if (path === "/api/ledger") return ledgerExport(request, response);
+    if (path === "/api/card-payment-event") {
+      if (request.method !== "POST") return send(response, 405, { ok: false });
+      try {
+        const raw = await readBody(request);
+        return send(response, 200, await processCardPaymentEvent(request.headers, raw));
+      } catch (error) {
+        const invalid = /^Invalid (event|payment)/.test(error.message);
+        if (!invalid) console.error("Card payment event failed", error);
+        return send(response, invalid ? 401 : 500, { ok: false });
+      }
+    }
     if (path === "/api/platega-callback") {
       if (request.method !== "POST") return send(response, 405, { ok: false });
       try {
@@ -90,12 +101,13 @@ export function startDashboardApi({ port = Number(process.env.DASHBOARD_PORT) ||
         return send(response, 401, { ok: false });
       }
     }
-    if (path !== "/api/dashboard" && path !== "/api/funnel" && path !== "/api/crypto") return send(response, 404, { ok: false });
+    if (path !== "/api/dashboard" && path !== "/api/funnel" && path !== "/api/crypto" && path !== "/api/card-checkout") return send(response, 404, { ok: false });
     if (request.method !== "POST") return send(response, 405, { ok: false });
     let user;
     try {
       const body = JSON.parse((await readBody(request)) || "{}");
       user = verifyInitData(body.initData);
+      if (path === "/api/card-checkout") return send(response, 200, { ok: true, ...await (body.action === "quote" ? getCardQuote(user.id) : createCardCheckout(user.id, body.plan)) });
       if (path === "/api/crypto") {
         if (body.action === "create") return send(response, 200, { ok: true, ...await createCryptoCheckout(user, body.plan) });
         if (body.action === "status") return send(response, 200, { ok: true, ...await checkCryptoCheckout(user.id, String(body.transactionId || "")) });
@@ -108,7 +120,8 @@ export function startDashboardApi({ port = Number(process.env.DASHBOARD_PORT) ||
       const data = await getDashboard(user.id, { tzOffset: body.tzOffset });
       return send(response, 200, { ok: true, ...data });
     } catch (error) {
-      if (!user) return send(response, 401, { ok: false, message: "Unauthorized" });
+      if (!user) return send(response, 401, { ok: false, code: "unauthorized", message: "Откройте Mini App из Telegram." });
+      if (path === "/api/card-checkout") return send(response, error.code === "offer_unavailable" ? 403 : 503, { ok: false, code: error.code === "offer_unavailable" ? "offer_unavailable" : "checkout_unavailable", message: error.code === "offer_unavailable" ? error.message : "Платёжный сервис временно недоступен. Попробуйте позже." });
       console.error("Dashboard API failed", error);
       return send(response, 500, { ok: false, message: error.message || "Unable to process request" });
     }
