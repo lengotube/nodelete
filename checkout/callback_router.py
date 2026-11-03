@@ -1,9 +1,14 @@
-"""Optional isolated CloudPayments callback router; NOT deployed automatically."""
+"""CloudPayments callback router for the terminal shared by Anonyx and Ghost.
+
+Anonyx is the terminal's original owner, so it is the default: a callback goes
+to Ghost only when it carries a Ghost marker. Nothing here may stop an Anonyx
+callback: no provider API calls, and a Ghost database failure only affects the
+Ghost lookup. Each service verifies the signature itself.
+If this process is down, nginx sends callbacks straight to Anonyx.
+"""
 import asyncio
-import base64
-import hashlib
-import hmac
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -15,6 +20,9 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 TYPES = ("check", "pay", "fail", "recurrent")
 HOP = {"host", "connection", "content-length", "transfer-encoding", "keep-alive", "te", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate"}
+GHOST_TIMEOUT = ClientTimeout(total=25)
+ANONYX_TIMEOUT = ClientTimeout(total=60)
+log = logging.getLogger("ghost-router")
 
 
 def fields_from_body(content_type, raw):
@@ -27,7 +35,7 @@ def fields_from_body(content_type, raw):
     else:
         raise ValueError("unsupported content type")
     result = {}
-    for name in ("AccountId", "InvoiceId", "SubscriptionId", "TransactionId", "Id"):
+    for name in ("AccountId", "InvoiceId", "SubscriptionId", "Id"):
         values = [v for k, v in fields if isinstance(k, str) and k.lower() == name.lower()]
         if len(values) > 1 or (values and not isinstance(values[0], str)):
             raise ValueError("ambiguous field")
@@ -35,86 +43,32 @@ def fields_from_body(content_type, raw):
     return result
 
 
-def destination(content_type, raw, lookup=None, kind="", resolved_account=""):
-    """Route only when identifiers prove one owner; never mutate request bytes."""
-    data = fields_from_body(content_type, raw)
-    def one(name): return data[name]
+def destination(content_type, raw, lookup=None, kind=""):
+    """Return "ghost" only on a Ghost marker, otherwise "anonyx"; never mutate bytes.
 
-    account, invoice = one("AccountId"), one("InvoiceId")
-    if resolved_account:
-        if account and account != resolved_account:
-            raise ValueError("account conflict")
-        account = resolved_account
-    subscription = one("Id") if kind == "recurrent" else one("SubscriptionId")
-    evidence = set()
-    if account:
-        if re.fullmatch(r"ghost:[1-9][0-9]{0,19}", account): evidence.add("ghost")
-        elif re.fullmatch(r"(?:rp2:(?:anon|n1):)?[1-9][0-9]{0,19}", account): evidence.add("anonyx")
-        else: raise ValueError("unrecognized account")
-    if invoice.startswith("ghost-"):
-        evidence.add("ghost")
-    elif invoice.startswith("rp2-"):
-        evidence.add("anonyx")
-    # For absent account, a prefix is not enough: verify the exact order or
-    # subscription exists locally before forwarding any signed notification.
-    needs_lookup = (not account and (invoice.startswith("ghost-") or subscription)) or (account and "anonyx" in evidence and bool(subscription))
-    if needs_lookup:
-        if lookup is None:
-            raise ValueError("ownership lookup unavailable")
-        if lookup(invoice, subscription): evidence.add("ghost")
-        elif invoice.startswith("ghost-"): raise ValueError("unknown ghost order")
-    if len(evidence) != 1:
-        raise ValueError("ambiguous ownership")
-    return evidence.pop()
-
-
-def recognized_account(account):
-    return bool(re.fullmatch(r"(?:ghost:|rp2:(?:anon|n1):)?[1-9][0-9]{0,19}", account))
-
-
-def verify_provider_signature(request, raw):
-    public_id, secret = os.getenv("CLOUDPAYMENTS_PUBLIC_ID", ""), os.getenv("CLOUDPAYMENTS_API_SECRET", "")
-    if not public_id or not secret:
-        raise ValueError("provider credentials unavailable")
-    signature = base64.b64encode(hmac.new(secret.encode(), raw, hashlib.sha256).digest()).decode()
-    if not hmac.compare_digest(signature, request.headers.get("Content-HMAC", "")):
-        raise web.HTTPForbidden(text="Invalid callback signature")
-    return public_id, secret
-
-
-async def provider_account(request, raw, data, kind):
-    public_id, secret = verify_provider_signature(request, raw)
-    tx = data["TransactionId"]
-    sub = data["Id"] if kind == "recurrent" else data["SubscriptionId"]
-    if tx and not re.fullmatch(r"[0-9]{1,20}", tx): raise ValueError("invalid transaction")
-    if sub and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sub): raise ValueError("invalid subscription")
-    checks = []
-    if tx: checks.append(("/payments/get", {"TransactionId": int(tx)}))
-    if sub: checks.append(("/subscriptions/get", {"Id": sub}))
-    if not checks: raise ValueError("no provider identifier")
-    auth = base64.b64encode(f"{public_id}:{secret}".encode()).decode()
-    accounts = set()
-    limiter = request.app.get("provider_limit")
-    acquired = False
+    Raises ValueError only when one callback carries markers of both services:
+    Anonyx acknowledges an account it cannot read, so a Ghost payment sent there
+    would be lost. The 503 makes CloudPayments retry and leaves it visible.
+    """
     try:
-        if limiter is not None:
-            await asyncio.wait_for(limiter.acquire(), timeout=0.5)
-            acquired = True
-        for path, payload in checks:
-            async with request.app["session"].post("https://api.cloudpayments.ru" + path, json=payload,
-                    headers={"Authorization": "Basic " + auth}, timeout=ClientTimeout(total=5), allow_redirects=False) as resp:
-                if resp.status != 200: raise ValueError("provider lookup unavailable")
-                result = await resp.json()
-                model = result.get("Model") if result.get("Success") is True else None
-                account = model.get("AccountId") if isinstance(model, dict) else None
-                if not isinstance(account, str) or not recognized_account(account): raise ValueError("provider ownership unclear")
-                accounts.add(account)
-    except (ClientError, asyncio.TimeoutError, OSError) as exc:
-        raise ValueError("provider lookup unavailable") from exc
-    finally:
-        if acquired: limiter.release()
-    if len(accounts) != 1: raise ValueError("provider ownership conflict")
-    return accounts.pop()
+        data = fields_from_body(content_type, raw)
+    except (ValueError, UnicodeError):
+        return "anonyx"
+    account, invoice = data["AccountId"], data["InvoiceId"]
+    subscription = data["Id"] if kind == "recurrent" else data["SubscriptionId"]
+    ghost = bool(re.fullmatch(r"ghost:[1-9][0-9]{0,19}", account)) or invoice.startswith("ghost-")
+    anonyx_account = bool(re.fullmatch(r"(?:rp2:(?:anon|n1):)?[1-9][0-9]{0,19}", account))
+    if ghost and (anonyx_account or invoice.startswith("rp2-")):
+        raise ValueError("conflicting ownership")
+    if ghost:
+        return "ghost"
+    if not account and subscription and lookup is not None:
+        try:
+            if lookup(invoice, subscription):
+                return "ghost"
+        except (ValueError, OSError):
+            log.exception("Ghost subscription lookup failed; sending the callback to Anonyx")
+    return "anonyx"
 
 
 def ghost_lookup(invoice, subscription):
@@ -131,31 +85,23 @@ def ghost_lookup(invoice, subscription):
 
 
 async def route(request):
-    if request.headers.get("Content-Encoding", "identity").lower() != "identity":
-        raise web.HTTPServiceUnavailable(text="Unsupported callback encoding")
     raw = await request.read()
+    kind = request.path.rsplit("/", 1)[-1]
     try:
-        kind = request.path.rsplit("/", 1)[-1]
-        data = fields_from_body(request.content_type, raw)
-        resolved = ""
-        if not recognized_account(data["AccountId"]):
-            sub = data["Id"] if kind == "recurrent" else data["SubscriptionId"]
-            if data["TransactionId"] or sub:
-                resolved = await provider_account(request, raw, data, kind)
-            else:
-                verify_provider_signature(request, raw)
-        target = destination(request.content_type, raw, ghost_lookup, kind, resolved)
-    except (ValueError, UnicodeError, json.JSONDecodeError):
+        target = destination(request.content_type, raw, ghost_lookup, kind)
+    except ValueError:
+        log.error("Callback carries markers of both services: kind=%s", kind)
         raise web.HTTPServiceUnavailable(text="Ambiguous callback")
     if target == "ghost":
-        port = 8093
+        port, timeout = 8093, GHOST_TIMEOUT
     else:
-        port = 8082 if kind == "recurrent" else 5082
+        port, timeout = (8082 if kind == "recurrent" else 5082), ANONYX_TIMEOUT
     headers = [(k, v) for k, v in request.headers.items() if k.lower() not in HOP]
     try:
-        async with request.app["session"].post(f"http://127.0.0.1:{port}/cp/{kind}", data=raw, headers=headers, allow_redirects=False) as response:
+        async with request.app["session"].post(f"http://127.0.0.1:{port}/cp/{kind}", data=raw, headers=headers, allow_redirects=False, timeout=timeout) as response:
             body = await response.read()
-            if response.status >= 400:
+            # Anonyx answers exactly as it did without the router.
+            if target == "ghost" and response.status >= 400:
                 raise web.HTTPServiceUnavailable(text="Callback upstream unavailable")
             response_headers = [(k, v) for k, v in response.headers.items() if k.lower() not in HOP]
             return web.Response(status=response.status, body=body, headers=response_headers)
@@ -164,7 +110,7 @@ async def route(request):
 
 
 async def start(app):
-    app["session"] = ClientSession(timeout=ClientTimeout(total=25), auto_decompress=False)
+    app["session"] = ClientSession(auto_decompress=False)
 
 
 async def stop(app):
@@ -173,7 +119,6 @@ async def stop(app):
 
 def build_app():
     app = web.Application(client_max_size=64 * 1024)
-    app["provider_limit"] = asyncio.Semaphore(8)
     app.on_startup.append(start)
     app.on_cleanup.append(stop)
     for kind in TYPES:
@@ -182,4 +127,5 @@ def build_app():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     web.run_app(build_app(), host="127.0.0.1", port=int(os.getenv("GHOST_CALLBACK_ROUTER_PORT", "8096")), access_log=None)
