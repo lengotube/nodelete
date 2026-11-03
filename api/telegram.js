@@ -518,13 +518,13 @@ async function startTrial(connection) {
   const existing = await get(key);
   if (existing) return null;
   const startedAt = Date.now();
-  // New trials last three calendar days from connection. Older trials that
-  // already promised a first-event countdown keep their existing terms.
+  // The 3 days are counted from the first event Ghost catches (startTrialCountdown),
+  // not from connecting: until then endsAt stays empty and access stays open.
   const trial = {
     status: "active",
     startedAt,
-    endsAt: startedAt + TRIAL_DURATION_MS,
-    countdownAt: startedAt,
+    endsAt: null,
+    countdownAt: null,
     connectionId: connection.id,
     userChatId: connection.userChatId
   };
@@ -655,7 +655,7 @@ async function activateTrialsForConnectedUsers() {
     await telegram("sendMessage", {
       chat_id: trial.userChatId || ownerId,
       parse_mode: "HTML",
-      text: `🎁 <b>Для вас активирован бесплатный пробный период на 3 дня.</b>\n\nОтсчёт начался с подключения Ghost.`
+      text: `🎁 <b>Для вас активирован бесплатный пробный период на 3 дня.</b>\n\n3 дня начнут считаться с первого события, которое поймает Ghost, — до этого пробный период не тратится.`
     });
   });
 }
@@ -1282,7 +1282,7 @@ async function storeConnection(connection) {
     await addToSet("business:enabled", ownerId);
     const trial = await startTrial(data);
     const trialText = trial
-      ? `\n\n🎁 <b>Пробный период активирован на 3 дня.</b> Отсчёт начался с подключения Ghost.`
+      ? `\n\n🎁 <b>Пробный период — 3 дня.</b> Отсчёт начнётся с первого события, которое поймает Ghost: до этого пробный период не тратится.`
       : "";
     await notifyOwner(connection.user_chat_id,
       `<tg-emoji emoji-id="5411126895620167819">✅</tg-emoji> <b>${escapeHtml(BRAND)} подключён и готов к работе.</b>\n\nЯ буду присылать уведомления, если Telegram передаст мне событие удаления или изменения в чатах, которые вы разрешили. Старые сообщения до подключения недоступны.${trialText}`
