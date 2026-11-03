@@ -6,10 +6,10 @@ const SUPPORT_URL = process.env.SUPPORT_URL || "https://t.me/ghostmsg_support_bo
 const GUIDE_ASSETS_CHAT_ID = process.env.GUIDE_ASSETS_CHAT_ID || "-1004319974246";
 const GUIDE_VIDEO_MESSAGE_ID = Number(process.env.GUIDE_VIDEO_MESSAGE_ID || 2);
 const STARS_PLANS = {
-  lite: { title: "Ghost Lite", stars: 180, description: "Доступ к Ghost на 7 дней." },
-  plus: { title: "Ghost Plus", stars: 360, description: "Доступ к Ghost на 30 дней." },
-  prime: { title: "Ghost Prime", stars: 1700, description: "Доступ к Ghost на 1 год." },
-  ultra: { title: "Ghost Ultra", stars: 4370, description: "Постоянный доступ к Ghost." },
+  lite: { title: "Ghost Lite", stars: 79, description: "Доступ к Ghost на 7 дней." },
+  plus: { title: "Ghost Plus", stars: 179, description: "Доступ к Ghost на 30 дней." },
+  quarter: { title: "Ghost Quarter", stars: 449, description: "Доступ к Ghost на 90 дней." },
+  prime: { title: "Ghost Prime", stars: 1290, description: "Доступ к Ghost на 1 год." },
   group5: { title: "Ghost для 5 групп", stars: 499, groups: 5 },
   group10: { title: "Ghost для 10 групп", stars: 749, groups: 10 },
   group20: { title: "Ghost для 20 групп", stars: 1249, groups: 20 },

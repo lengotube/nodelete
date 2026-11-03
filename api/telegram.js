@@ -26,10 +26,12 @@ const GUIDE_ASSETS_CHAT_ID = process.env.GUIDE_ASSETS_CHAT_ID || "-1004319974246
 const GUIDE_VIDEO_MESSAGE_ID = Number(process.env.GUIDE_VIDEO_MESSAGE_ID || 2);
 const SETTINGS_IMAGE_MESSAGE_ID = Number(process.env.SETTINGS_IMAGE_MESSAGE_ID || 3);
 const PLANS = {
-  lite: { title: "Lite", stars: 180, days: 7, scope: "personal" },
-  plus: { title: "Plus", stars: 360, days: 30, scope: "personal" },
-  prime: { title: "Prime", stars: 1700, days: 365, scope: "personal" },
-  ultra: { title: "Ultra", stars: 4370, days: null, scope: "personal" },
+  lite: { title: "Lite", stars: 79, days: 7, scope: "personal" },
+  plus: { title: "Plus", stars: 179, days: 30, scope: "personal" },
+  quarter: { title: "Quarter", stars: 449, days: 90, scope: "personal" },
+  prime: { title: "Prime", stars: 1290, days: 365, scope: "personal" },
+  // Retain the original permanent plan to honor previously issued invoices.
+  ultra: { title: "Ultra", stars: 4370, days: null, scope: "personal", legacy: true },
   group5: { title: "Группы · 5", stars: 499, days: 30, scope: "groups", groups: 5 },
   group10: { title: "Группы · 10", stars: 749, days: 30, scope: "groups", groups: 10 },
   group20: { title: "Группы · 20", stars: 1249, days: 30, scope: "groups", groups: 20 },
@@ -521,8 +523,8 @@ async function startTrial(connection) {
   const trial = {
     status: "active",
     startedAt,
-    endsAt: null,
-    countdownAt: null,
+    endsAt: startedAt + TRIAL_DURATION_MS,
+    countdownAt: startedAt,
     connectionId: connection.id,
     userChatId: connection.userChatId
   };
@@ -640,7 +642,7 @@ async function activateTrialsForConnectedUsers() {
     await telegram("sendMessage", {
       chat_id: trial.userChatId || ownerId,
       parse_mode: "HTML",
-      text: `🎁 <b>Для вас активирован бесплатный пробный период на 3 дня.</b>\n\n3 дня начнут считаться с первого события, которое поймает Ghost, — до этого пробный период не тратится.`
+      text: `🎁 <b>Для вас активирован бесплатный пробный период на 3 дня.</b>\n\nОтсчёт начался с подключения Ghost.`
     });
   });
 }
@@ -748,12 +750,15 @@ async function funnelPass() {
   });
 }
 
-const planFromPayload = (payload) => {
+const planFromPayload = (payload, paidAmount = null) => {
   const [, planId, issuedAmount] = String(payload || "").split(":");
   const plan = PLANS[planId];
   if (!plan) return null;
   const amount = Number(issuedAmount);
-  return { id: planId, ...plan, issuedStars: Number.isSafeInteger(amount) && amount > 0 ? amount : plan.stars };
+  const legacyStars = { lite: 180, plus: 360, prime: 1700, ultra: 4370 };
+  const legacyAmount = Number(paidAmount);
+  const oldUnpricedInvoice = !issuedAmount && legacyAmount === legacyStars[planId];
+  return { id: planId, ...plan, issuedStars: Number.isSafeInteger(amount) && amount > 0 ? amount : oldUnpricedInvoice ? legacyAmount : plan.stars };
 };
 
 const subscriptionKeyFor = (userId, plan) => plan.scope === "groups" ? `group-subscription:${userId}` : `subscription:${userId}`;
@@ -897,6 +902,7 @@ async function sendPaymentReviewAlert(message, plan) {
 async function sendStarsInvoice(chatId, planId) {
   const plan = PLANS[planId];
   if (!plan) throw new Error("Unknown plan");
+  if (plan.legacy) return telegram("sendMessage", { chat_id: chatId, text: "Этот тариф больше недоступен. Откройте Ghost и выберите актуальный тариф." });
   if (plan.scope === "personal") {
     const current = await personalSubscription(chatId);
     if (current && current.expiresAt === null && plan.days) {
@@ -916,7 +922,7 @@ async function sendStarsInvoice(chatId, planId) {
 
 async function completeStarsPayment(message) {
   const payment = message.successful_payment;
-  const plan = planFromPayload(payment.invoice_payload);
+  const plan = planFromPayload(payment.invoice_payload, payment.total_amount);
   if (!plan || payment.currency !== "XTR" || payment.total_amount !== plan.issuedStars) return sendPaymentReviewAlert(message, plan);
   if (await get(`payment:${payment.telegram_payment_charge_id}`)) return;
   const subscriptionKey = subscriptionKeyFor(message.from.id, plan);
@@ -1088,7 +1094,7 @@ async function storeConnection(connection) {
     await addToSet("business:enabled", ownerId);
     const trial = await startTrial(data);
     const trialText = trial
-      ? `\n\n🎁 <b>Пробный период — 3 дня.</b> Отсчёт начнётся с первого события, которое поймает Ghost: до этого пробный период не тратится.`
+      ? `\n\n🎁 <b>Пробный период активирован на 3 дня.</b> Отсчёт начался с подключения Ghost.`
       : "";
     await notifyOwner(connection.user_chat_id,
       `<tg-emoji emoji-id="5411126895620167819">✅</tg-emoji> <b>${escapeHtml(BRAND)} подключён и готов к работе.</b>\n\nЯ буду присылать уведомления, если Telegram передаст мне событие удаления или изменения в чатах, которые вы разрешили. Старые сообщения до подключения недоступны.${trialText}`
@@ -2105,7 +2111,7 @@ export async function processUpdate(update) {
   if (update.message?.successful_payment) await completeStarsPayment(update.message);
   if (update.callback_query) await callbackHandler(update.callback_query);
   if (update.pre_checkout_query) {
-    const plan = planFromPayload(update.pre_checkout_query.invoice_payload);
+    const plan = planFromPayload(update.pre_checkout_query.invoice_payload, update.pre_checkout_query.total_amount);
     const current = plan ? await get(subscriptionKeyFor(update.pre_checkout_query.from.id, plan)) : null;
     const hasPermanentAccess = plan?.scope === "personal" && current?.expiresAt === null && plan.days;
     const valid = plan && update.pre_checkout_query.currency === "XTR" && update.pre_checkout_query.total_amount === plan.issuedStars && !hasPermanentAccess;

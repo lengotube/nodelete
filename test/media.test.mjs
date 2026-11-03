@@ -87,6 +87,8 @@ fixture("live-location");
 fixture("caption-failure");
 fixture("file-failure");
 fixture("missing-original");
+fixture("price-quarter", { locked: true });
+fixture("price-legacy-unpriced", { locked: true });
 writeFileSync(dataFile, JSON.stringify(store), { mode: 0o600 });
 
 const calls = [];
@@ -257,6 +259,47 @@ test("missing originals never fabricate an attachment", async () => {
   assert.deepEqual(calls.map((call) => call.method), ["sendMessage"]);
   assert.ok(calls[0].payload.text.includes("Ghost не получил исходный текст"));
 });
+
+test("new and previously issued Stars invoices are validated without changing legacy plan durations", async () => {
+  const checks = [
+    ["ghost-plan:lite:79", 79, true],
+    ["ghost-plan:plus:179", 179, true],
+    ["ghost-plan:quarter:449", 449, true],
+    ["ghost-plan:prime:1290", 1290, true],
+    ["ghost-plan:lite:180", 180, true],
+    ["ghost-plan:prime:1700", 1700, true],
+    ["ghost-plan:ultra:4370", 4370, true],
+    ["ghost-plan:lite", 180, true],
+    ["ghost-plan:prime", 1700, true],
+    ["ghost-plan:lite", 999, false],
+    ["ghost-plan:quarter:449", 1290, false]
+  ];
+  for (const [payload, amount, expected] of checks) {
+    resetCalls();
+    await processUpdate({ pre_checkout_query: { id: "test-query", from: { id: 111111 }, invoice_payload: payload, currency: "XTR", total_amount: amount } });
+    assert.equal(calls[0].method, "answerPreCheckoutQuery");
+    assert.equal(calls[0].payload.ok, expected, `${payload} / ${amount}`);
+  }
+});
+
+for (const [name, payload, amount, days] of [
+  ["price-quarter", "ghost-plan:quarter:449", 449, 90],
+  ["price-legacy-unpriced", "ghost-plan:lite", 180, 7]
+]) {
+  test(`${name} grants the purchased duration`, async () => {
+    const f = fixtures.get(name);
+    resetCalls();
+    const before = Date.now();
+    await processUpdate({ message: {
+      from: { id: f.ownerId, first_name: "Test owner" }, chat: { id: f.ownerId, type: "private" },
+      successful_payment: { invoice_payload: payload, currency: "XTR", total_amount: amount, telegram_payment_charge_id: `charge-${name}` }
+    } });
+    const subscription = read(`subscription:${f.ownerId}`);
+    assert.ok(subscription);
+    assert.ok(subscription.expiresAt >= before + days * 86400000);
+    assert.ok(subscription.expiresAt < before + days * 86400000 + 10000);
+  });
+}
 
 after(() => {
   flushStoreSync();
