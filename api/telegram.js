@@ -1861,6 +1861,32 @@ async function copyGuideAsset(chatId, messageId, { caption, replyMarkup } = {}) 
   });
 }
 
+// The story's "get the video" button lands here. Telegram fetches the file by URL once,
+// after that it is sent by file_id.
+async function sendConnectVideo(chatId, ownerId = chatId) {
+  const url = APP_URL ? `${APP_URL}/ghost_instruction.mp4` : null;
+  const assetKey = "asset:connect-video:v1";
+  const cached = await get(assetKey);
+  if (!url && !cached?.fileId) return sendInstruction(chatId, ownerId);
+  const payload = { chat_id: chatId, caption: "Как подключить Ghost за 30 секунд. Имя бота для вставки: @ghostmsg_robot", supports_streaming: true };
+  let message;
+  try {
+    try {
+      message = await telegram("sendVideo", { ...payload, video: cached?.fileId || url });
+    } catch (error) {
+      if (!cached?.fileId || !url || !/wrong file|file.*identifier|file.*invalid/i.test(String(error.message))) throw error;
+      message = await telegram("sendVideo", { ...payload, video: url });
+    }
+  } catch (error) {
+    if (/blocked|deactivated/i.test(String(error.message))) throw error;
+    console.error("Connect video failed", error);
+    return sendInstruction(chatId, ownerId);
+  }
+  const fileId = message.video?.file_id;
+  if (fileId && fileId !== cached?.fileId) await put(assetKey, { fileId }, null);
+  return message;
+}
+
 async function sendInstruction(chatId, ownerId = chatId) {
   await beginFunnel(ownerId);
   await updateFunnel(ownerId, "instruction_opened");
@@ -2034,6 +2060,7 @@ async function commandHandler(message) {
   if (command === "/start") {
     await beginFunnel(message.from.id);
     if (argument === "settings") return sendInstruction(message.chat.id, message.from.id);
+    if (argument === "video") return sendConnectVideo(message.chat.id, message.from.id);
     if (argument?.startsWith("buy_")) return sendStarsInvoice(message.chat.id, argument.slice(4));
     if (argument) await registerReferralVisit(argument.toLowerCase(), message);
     const language = (await get(`language:${message.from.id}`))?.code || "ru";
