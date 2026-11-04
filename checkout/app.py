@@ -96,9 +96,9 @@ def configuration() -> dict[str, str]:
     return result
 
 
-def customer_receipt(config: dict, amount: int, email: str) -> dict:
+def customer_receipt(config: dict, amount: int, email: str = "") -> dict:
     vat = config["GHOST_RECEIPT_VAT"]
-    return {"Items": [{"label": config["GHOST_RECEIPT_LABEL"], "price": amount, "quantity": 1, "amount": amount, "vat": None if vat == "none" else int(vat), "method": 4, "object": 4}], "taxationSystem": int(config["GHOST_RECEIPT_TAXATION"]), "email": email, "isBso": False, "amounts": {"electronic": amount}}
+    return {"Items": [{"label": config["GHOST_RECEIPT_LABEL"], "price": amount, "quantity": 1, "amount": amount, "vat": None if vat == "none" else int(vat), "method": 4, "object": 4}], "taxationSystem": int(config["GHOST_RECEIPT_TAXATION"]), **({"email": email} if email else {}), "isBso": False, "amounts": {"electronic": amount}}
 
 
 def initialize_database(path: str) -> sqlite3.Connection:
@@ -203,13 +203,22 @@ async def internal_cancel(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "status": "cancelled"})
 
 
+def page_plan_ids(link_plan: str) -> tuple[str, ...]:
+    """Plans offered on a checkout link. Only a link issued for the 10 RUB offer shows that price."""
+    return ("lite" if link_plan == "lite" else "lite_regular", "plus", "quarter", "prime")
+
+
+def page_plans(link_plan: str) -> list[dict]:
+    return [{"id": plan_id, **{key: PLANS[plan_id][key] for key in ("first", "renew", "label", "frequency")}} for plan_id in page_plan_ids(link_plan)]
+
+
 async def page(request: web.Request) -> web.Response:
     row = row_for_link(request.app["db"], request.match_info["token"])
     if not row:
         raise web.HTTPNotFound()
     # Configuration is inserted as JSON, with < escaped to prevent script breakout.
     cfg = request.app["config"]
-    values = {"offer": cfg["GHOST_OFFER_URL"], "privacy": cfg["GHOST_PRIVACY_URL"], "support": cfg["GHOST_SUPPORT_URL"], "seller": cfg["GHOST_SELLER_NAME"], "publicId": cfg["CLOUDPAYMENTS_PUBLIC_ID"], "token": request.match_info["token"], "basePath": urlparse(cfg["GHOST_CHECKOUT_PUBLIC_URL"]).path.rstrip("/"), "plan": PLANS[row["plan"]]}
+    values = {"offer": cfg["GHOST_OFFER_URL"], "privacy": cfg["GHOST_PRIVACY_URL"], "support": cfg["GHOST_SUPPORT_URL"], "seller": cfg["GHOST_SELLER_NAME"], "publicId": cfg["CLOUDPAYMENTS_PUBLIC_ID"], "token": request.match_info["token"], "basePath": urlparse(cfg["GHOST_CHECKOUT_PUBLIC_URL"]).path.rstrip("/"), "plans": page_plans(row["plan"]), "selected": row["plan"]}
     rendered = (ROOT / "pay.html").read_text().replace("__CONFIG__", json.dumps(values, ensure_ascii=False).replace("<", "\\u003c"))
     return web.Response(text=rendered, content_type="text/html", headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff"})
 
@@ -241,13 +250,13 @@ async def confirm(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest()
     if body.get("accept_offer") is not True or body.get("accept_recurring") is not True:
         return web.json_response({"ok": False, "error": "consent_required"}, status=400)
-    email = body.get("email", "")
-    if not isinstance(email, str) or len(email) > 254 or email.count("@") != 1 or any(c.isspace() for c in email) or not all(email.split("@")):
-        return web.json_response({"ok": False, "error": "email_required"}, status=400)
     user_id = row["user_id"]
     async with LOCKS.setdefault(user_id, asyncio.Lock()):
         db = request.app["db"]
-        plan_id, plan = row["plan"], PLANS[row["plan"]]
+        plan_id = body.get("plan", row["plan"])
+        if plan_id not in page_plan_ids(row["plan"]):
+            return web.json_response({"ok": False, "error": "plan_unavailable"}, status=400)
+        plan = PLANS[plan_id]
         if (plan_id == "lite" and db.execute("SELECT 1 FROM payments WHERE user_id=? AND kind='initial' AND plan='lite'", (user_id,)).fetchone()) or db.execute("SELECT 1 FROM subscriptions WHERE user_id=? AND status NOT IN ('cancelled','expired','rejected')", (user_id,)).fetchone():
             return web.json_response({"ok": False, "error": "offer_unavailable"}, status=409)
         # A single live order prevents two browser clicks creating two charges.
@@ -256,7 +265,7 @@ async def confirm(request: web.Request) -> web.Response:
         if not existing:
             now = iso(utc_now())
             db.execute("INSERT INTO orders(invoice_id,user_id,status,terms_version,consent_at,created_at,plan) VALUES(?,?,?,?,?,?,?)", (invoice, user_id, "new", request.app["config"]["GHOST_TERMS_VERSION"], now, now, plan_id))
-        return web.json_response({"ok": True, "invoice_id": invoice, "account_id": f"ghost:{user_id}", "amount": plan["first"], "currency": "RUB", "email": email, "receipt": customer_receipt(request.app["config"], plan["first"], email)})
+        return web.json_response({"ok": True, "invoice_id": invoice, "account_id": f"ghost:{user_id}", "amount": plan["first"], "currency": "RUB", "receipt": customer_receipt(request.app["config"], plan["first"])})
 
 
 def verified_webhook(request: web.Request, raw: bytes) -> bool:
@@ -300,8 +309,7 @@ async def cloud_check(request: web.Request) -> web.Response:
     else:
         row = db.execute("SELECT * FROM orders WHERE invoice_id=?", (data.get("InvoiceId", ""),)).fetchone()
         tx = data.get("TransactionId", "")
-        email = data.get("Email", "")
-        valid = row and row["user_id"] == user_id and row["status"] == "new" and data.get("Currency") == "RUB" and money_matches(data.get("Amount"), PLANS[row["plan"]]["first"]) and str(tx).isdigit() and "@" in email and not db.execute("SELECT 1 FROM subscriptions WHERE user_id=? AND status NOT IN ('cancelled','expired','rejected')", (row["user_id"],)).fetchone() and (row["plan"] != "lite" or not db.execute("SELECT 1 FROM payments WHERE user_id=? AND kind='initial' AND plan='lite'", (row["user_id"],)).fetchone())
+        valid = row and row["user_id"] == user_id and row["status"] == "new" and data.get("Currency") == "RUB" and money_matches(data.get("Amount"), PLANS[row["plan"]]["first"]) and str(tx).isdigit() and not db.execute("SELECT 1 FROM subscriptions WHERE user_id=? AND status NOT IN ('cancelled','expired','rejected')", (row["user_id"],)).fetchone() and (row["plan"] != "lite" or not db.execute("SELECT 1 FROM payments WHERE user_id=? AND kind='initial' AND plan='lite'", (row["user_id"],)).fetchone())
         if valid:
             reservation = db.execute("SELECT transaction_id FROM payment_checks WHERE user_id=?", (row["user_id"],)).fetchone()
             if reservation:
@@ -379,11 +387,11 @@ async def cloud_pay(request: web.Request) -> web.Response:
         if kind == "initial":
             token = data.get("Token")
             next_at = add_period(utc_now(), plan)
-            if not token or "@" not in data.get("Email", ""):
+            if not token:
                 db.execute("UPDATE subscriptions SET status='needs_review',updated_at=? WHERE user_id=?", (iso(utc_now()), user_id))
             else:
                 try:
-                    result = await cloud_request(request.app, "/subscriptions/create", {"Token": token, "AccountId": account, "Description": f"Ghost: подписка {plan['renew']} ₽ / {plan['label']}", "Amount": plan["renew"], "Currency": "RUB", "RequireConfirmation": False, "StartDate": next_at.strftime("%Y-%m-%dT%H:%M:%S"), "Interval": plan["interval"], "Period": plan["period"], "Email": data.get("Email", ""), "CustomerReceipt": customer_receipt(request.app["config"], plan["renew"], data.get("Email", ""))})
+                    result = await cloud_request(request.app, "/subscriptions/create", {"Token": token, "AccountId": account, "Description": f"Ghost: подписка {plan['renew']} ₽ / {plan['label']}", "Amount": plan["renew"], "Currency": "RUB", "RequireConfirmation": False, "StartDate": next_at.strftime("%Y-%m-%dT%H:%M:%S"), "Interval": plan["interval"], "Period": plan["period"], **({"Email": data["Email"]} if data.get("Email") else {}), "CustomerReceipt": customer_receipt(request.app["config"], plan["renew"], data.get("Email", ""))})
                     provider_id = (result.get("Model") or {}).get("Id") if result.get("Success") else None
                     db.execute("UPDATE subscriptions SET status=?,provider_id=?,next_at=?,updated_at=? WHERE user_id=?", ("active" if provider_id else "needs_review", provider_id, iso(next_at), iso(utc_now()), user_id))
                 except Exception:

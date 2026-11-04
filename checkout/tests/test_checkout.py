@@ -53,6 +53,23 @@ class CheckoutTest(unittest.IsolatedAsyncioTestCase):
         sig = checkout.signature(secret or self.config["GHOST_CHECKOUT_INTERNAL_SECRET"], timestamp, "POST", signature_path or path, raw)
         return await self.client.post(path, data=raw, headers={"X-Ghost-Timestamp": timestamp, "X-Ghost-Signature": sig, "Content-Type": "application/json"})
 
+    async def test_plan_can_be_changed_on_the_page_without_email(self):
+        res = await self.internal("/internal/ghost/checkout")
+        token = (await res.json())["url"].rsplit("/", 1)[-1]
+        html = await (await self.client.get(f"/pay/{token}")).text()
+        self.assertIn('"selected": "lite"', html)
+        self.assertIn('"id": "quarter"', html)
+        self.assertNotIn('"id": "lite_regular"', html)
+        consent = {"accept_offer": True, "accept_recurring": True}
+        for plan in ("lite_regular", "ultra", "nope"):
+            self.assertEqual((await self.client.post(f"/pay/{token}/confirm", json={**consent, "plan": plan})).status, 400)
+        res = await self.client.post(f"/pay/{token}/confirm", json={**consent, "plan": "quarter"})
+        self.assertEqual(res.status, 200)
+        data = await res.json()
+        self.assertEqual(data["amount"], 449)
+        self.assertNotIn("email", data)
+        self.assertNotIn("email", data["receipt"])
+
     async def hook(self, path, data, *, valid=True):
         raw = urlencode(data).encode()
         digest = base64.b64encode(hmac.new(self.config["CLOUDPAYMENTS_API_SECRET"].encode(), raw, hashlib.sha256).digest()).decode()
@@ -88,7 +105,8 @@ class CheckoutTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('/unsub', tariffs_html)
         self.assertIn('"basePath": "/ghost"', html)
         self.assertIn("cfg.basePath+'/pay/'", html)
-        self.assertIn("requireEmail:true", html)
+        self.assertNotIn("requireEmail", html)
+        self.assertNotIn('type="email"', html)
         data = {"AccountId": order["account_id"], "InvoiceId": order["invoice_id"], "TransactionId": "1234", "Amount": "10.00", "Currency": "RUB", "Token": "test-card-token", "Email": "buyer@example.invalid"}
         self.assertEqual((await (await self.hook("/cp/check", data, valid=False)).json())["code"], 13)
         wrong = {**data, "Amount": "1"}

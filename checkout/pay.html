@@ -5,78 +5,295 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex,nofollow">
   <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#08070e">
   <title>Ghost — подписка</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&display=swap">
   <script src="https://widget.cloudpayments.ru/bundles/cloudpayments.js" defer></script>
   <style>
-    :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0e0d15;color:#f7f5ff}
-    *{box-sizing:border-box}body{margin:0;padding:24px 16px 40px;background:radial-gradient(circle at 80% 0,#34215b 0,transparent 34%),#0e0d15}
-    main{max-width:430px;margin:auto}.brand{display:flex;align-items:center;gap:11px;font-size:24px;font-weight:800}
-    .avatar{width:44px;height:44px;border-radius:15px;object-fit:cover}
-    .card{margin-top:22px;padding:24px 20px;background:#17151f;border:1px solid #302b3e;border-radius:25px}
-    .pill{display:inline-block;border-radius:20px;background:#302348;color:#cbb8ff;padding:8px 11px;font-size:13px;font-weight:700}
-    h1{font-size:28px;line-height:1.12;margin:18px 0 10px}p{line-height:1.5;color:#c4bdcf}
-    .consent{display:flex;align-items:flex-start;gap:12px;margin:18px 0;color:#e4ddec;font-size:14px;line-height:1.45}
-    .consent small{display:block;margin-top:8px;color:#aaa1b6;font-size:13px;line-height:1.5}
-    input[type=checkbox]{appearance:none;flex:none;width:22px;height:22px;margin:1px 0 0;border:2px solid #8d7fa1;border-radius:6px;background:#1d1927}
-    input[type=checkbox]:checked{background:#856aff;border-color:#a38dff}input[type=checkbox]:checked:after{content:'✓';display:block;text-align:center;color:white;font-weight:800;font-size:17px;line-height:18px}
-    #email{appearance:auto;display:block;box-sizing:border-box;width:100%;height:auto;padding:14px;color:#f7f5ff;background:#24202f;border:1px solid #625779;border-radius:12px}
-    a{color:#bba7ff}button{width:100%;border:0;border-radius:16px;padding:17px;background:#8972fb;color:white;font-size:17px;font-weight:800;cursor:pointer}
-    button:disabled{background:#413a50;color:#aaa2b4;cursor:not-allowed}.hint{font-size:12px;color:#aaa1b6}.error{color:#ffb5bf;font-size:14px}.footer{text-align:center;font-size:12px;color:#958ca3}
+    :root{
+      color-scheme:dark;
+      --bg:#08070e;--panel:#111019;--raise:#191722;--selected:#211b36;--line:#2a2739;--line-strong:#8f76ee;
+      --text:#f5f3ff;--soft:#b1adc4;--faint:#8b879e;--accent:#b79bff;--accent-hi:#c8b3ff;--on-accent:#150c33;
+      --del:#ff8a93;--del-bg:#3a1a24;--edit:#c2b0ff;--edit-bg:#2a2245;--ok:#7be0ae;--err:#ff9aa5;
+      --font:"Golos Text",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    }
+    *{box-sizing:border-box}
+    [hidden]{display:none!important}
+    html{-webkit-text-size-adjust:100%;background:var(--bg)}
+    body{margin:0;min-height:100vh;font-family:var(--font);font-size:16px;line-height:1.5;color:var(--text);
+      background:radial-gradient(760px 420px at 12% -8%,rgba(112,78,240,.3),transparent 70%) no-repeat var(--bg)}
+    body.locked{overflow:hidden}
+    a{color:var(--accent-hi);text-underline-offset:3px}
+    button{font-family:inherit}
+    :focus-visible{outline:3px solid var(--accent-hi);outline-offset:2px}
+    .wrap{max-width:980px;margin:0 auto;padding:18px 16px calc(28px + env(safe-area-inset-bottom))}
+
+    .top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .brand{display:flex;align-items:center;gap:10px;font-size:19px;font-weight:800;letter-spacing:-.02em}
+    .brand img{width:36px;height:36px;border-radius:11px;object-fit:cover}
+    .bot{padding:7px 12px;border:1px solid var(--line);border-radius:99px;background:rgba(255,255,255,.03);color:var(--soft);font-size:13.5px;text-decoration:none;white-space:nowrap}
+    .bot:hover{color:var(--text);border-color:#46415c}
+
+    .layout{display:grid;gap:16px;margin-top:18px}
+    h1{margin:0;font-size:clamp(35px,10.4vw,54px);font-weight:800;line-height:1.04;letter-spacing:-.04em}
+    h1 span{display:block;color:var(--accent)}
+    .lead{max-width:44ch;margin:12px 0 0;font-size:16px;line-height:1.45;color:var(--soft)}
+    .chips{display:flex;flex-wrap:wrap;gap:7px;margin:14px 0 0;padding:0;list-style:none}
+    .chips li{padding:5px 11px;border:1px solid var(--line);border-radius:99px;background:var(--panel);color:var(--soft);font-size:13.5px}
+
+    /* The one moving thing on the page: a message is deleted and Ghost brings it back. */
+    .scene{display:grid;gap:12px;padding:16px;border:1px solid var(--line);border-radius:22px;background:var(--panel)}
+    .event{display:grid;grid-template-columns:38px 1fr;gap:11px;align-items:start}
+    .face{display:grid;place-items:center;width:38px;height:38px;border-radius:50%;background:#2b9fb0;color:#fff;font-weight:700;font-size:15px}
+    .face.other{background:#d98a35}
+    .who{display:block;font-size:14.5px;font-weight:600;line-height:1.3}
+    .note{display:block;margin-top:6px;padding:9px 12px;border-radius:13px;font-size:14.5px;line-height:1.35}
+    .note.del{background:var(--del-bg);color:#ffd6da}
+    .note.edit{background:var(--raise)}
+    .tag{display:inline-block;margin-right:7px;padding:0 7px;border-radius:6px;font-size:12.5px;font-weight:600;line-height:1.6}
+    .del .tag{background:rgba(255,120,130,.18);color:var(--del)}
+    .edit .tag{display:table;margin-bottom:4px;background:var(--edit-bg);color:var(--edit)}
+    .edit s{display:block;color:var(--faint)}
+    .said{display:inline;animation:vanish 3s linear both}
+    @keyframes vanish{0%,30%{opacity:1;filter:none}42%,74%{opacity:.08;filter:blur(6px)}100%{opacity:1;filter:none}}
+
+    .plans{padding:20px 16px 16px;border:1px solid var(--line);border-radius:24px;background:var(--panel);box-shadow:0 22px 60px rgba(0,0,0,.45)}
+    h2{margin:0;font-size:23px;font-weight:700;line-height:1.2;letter-spacing:-.02em}
+    .sub{margin:3px 0 0;font-size:14.5px;color:var(--soft)}
+    .list{display:grid;gap:8px;margin-top:14px}
+    .plan{display:grid;grid-template-columns:1fr auto 22px;align-items:center;gap:10px;min-height:60px;padding:9px 13px;border:1px solid var(--line);border-radius:15px;background:var(--raise);cursor:pointer;transition:border-color .12s,background .12s}
+    .plan:hover{border-color:#46415c}
+    .plan:has(input:checked){border-color:var(--line-strong);background:var(--selected)}
+    .plan:has(input:focus-visible){outline:3px solid var(--accent-hi);outline-offset:2px}
+    .plan input{position:absolute;opacity:0;width:1px;height:1px}
+    .plan b{display:block;font-size:15.5px;font-weight:700;line-height:1.25}
+    .plan small{display:block;font-size:13px;color:var(--soft);line-height:1.3}
+    .plan strong{font-size:16px;font-weight:700;white-space:nowrap}
+    .radio{width:20px;height:20px;border:2px solid #6c6780;border-radius:50%}
+    .plan:has(input:checked) .radio{border:0;background:radial-gradient(circle,var(--on-accent) 0 3.5px,var(--accent) 4px)}
+    .terms{margin:12px 0 0;font-size:14px;line-height:1.42;color:var(--text)}
+    .terms+.terms{margin-top:3px;color:var(--soft);font-size:13px}
+
+    .cta{display:block;width:100%;min-height:54px;margin-top:13px;padding:13px;border:0;border-radius:15px;background:var(--accent);color:var(--on-accent);font-size:16.5px;font-weight:700;line-height:1.2;cursor:pointer;box-shadow:0 8px 26px rgba(150,115,255,.28);transition:background .12s,transform .08s}
+    .cta:hover:not(:disabled){background:var(--accent-hi)}
+    .cta:active:not(:disabled){transform:scale(.985)}
+    .cta:disabled{background:#2c2840;color:#a7a1c0;box-shadow:none;cursor:not-allowed}
+    .cta.ghostly{background:transparent;color:var(--accent-hi);box-shadow:inset 0 0 0 2px var(--line-strong)}
+    .status{margin:9px 0 0;font-size:14px;line-height:1.4;color:var(--err)}
+    .status:empty{display:none}
+    .status.done{color:var(--ok)}
+
+    .docs{display:grid;gap:12px;margin-top:30px;padding-top:24px;border-top:1px solid var(--line)}
+    .tabs{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
+    .tabs button{padding:7px 13px;border:1px solid var(--line);border-radius:99px;background:var(--panel);color:var(--soft);font-size:14px;cursor:pointer}
+    .tabs button[aria-selected=true]{border-color:transparent;background:#e6dfff;color:var(--on-accent);font-weight:600}
+    .doc{padding:18px;border:1px solid var(--line);border-radius:20px;background:var(--panel)}
+    .doc h3{margin:0 0 8px;font-size:18px;font-weight:700}
+    .doc p{max-width:68ch;margin:0 0 9px;font-size:14.5px;line-height:1.5;color:var(--soft)}
+    .doc p:last-child{margin-bottom:0}
+    .foot{margin:20px 0 0;font-size:13px;color:var(--faint)}
+
+    .veil{position:fixed;inset:0;z-index:50;display:flex;align-items:flex-end;justify-content:center;background:rgba(4,3,10,.72);-webkit-backdrop-filter:blur(9px);backdrop-filter:blur(9px)}
+    .dialog{width:100%;max-width:430px;max-height:92vh;overflow:auto;padding:18px 16px calc(16px + env(safe-area-inset-bottom));border:1px solid #3a3353;border-bottom:0;border-radius:24px 24px 0 0;background:linear-gradient(180deg,#221b38 0,var(--panel) 120px);animation:rise .22s ease-out}
+    @keyframes rise{from{transform:translateY(22px);opacity:0}to{transform:none;opacity:1}}
+    .dialog-head{display:grid;grid-template-columns:46px 1fr 36px;gap:11px;align-items:center}
+    .dialog-head img{width:46px;height:46px;border-radius:14px;object-fit:cover}
+    .dialog h2{font-size:21px}
+    .dialog .sub{font-size:13.5px}
+    .close{width:36px;height:36px;border:1px solid var(--line);border-radius:11px;background:var(--raise);color:var(--text);font-size:19px;line-height:1;cursor:pointer}
+    .picked{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:15px;padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:var(--raise);font-size:14.5px;color:var(--soft)}
+    .picked b{font-size:17px;font-weight:700;color:var(--text);white-space:nowrap}
+    .consent{display:flex;gap:11px;margin-top:9px;padding:12px 13px;border:1px solid var(--line);border-radius:14px;background:var(--raise);font-size:14px;line-height:1.42;cursor:pointer;transition:border-color .12s,background .12s}
+    .consent:has(input:checked){border-color:var(--line-strong);background:var(--selected)}
+    .consent small{display:block;margin-top:5px;font-size:12.5px;line-height:1.42;color:var(--soft)}
+    .consent input{appearance:none;-webkit-appearance:none;flex:none;width:24px;height:24px;margin:0;border:2px solid var(--accent);border-radius:8px;background:transparent;cursor:pointer}
+    .consent input:checked{background:var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M4.5 10.5l3.6 3.6 7.4-8' fill='none' stroke='%23150c33' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/18px no-repeat}
+    .fine{margin:10px 0 0;text-align:center;font-size:12.5px;line-height:1.42;color:var(--soft)}
+
+    @media (min-width:860px){
+      .wrap{padding-top:26px}
+      .layout{grid-template-columns:1fr 372px;grid-template-areas:"hero plans" "scene plans";grid-template-rows:auto 1fr;column-gap:56px;row-gap:26px;margin-top:40px}
+      .hero{grid-area:hero}.plans{grid-area:plans;align-self:start;padding:22px 20px 18px}
+      .scene{grid-area:scene;align-self:start;max-width:440px}
+      .docs{grid-template-columns:190px 1fr;gap:36px;margin-top:44px;padding-top:34px}
+      .tabs{flex-direction:column;align-items:flex-start}
+      .veil{align-items:center;padding:20px}
+      .dialog{border-bottom:1px solid #3a3353;border-radius:24px;padding:20px}
+    }
+    @media (prefers-reduced-motion:reduce){.said,.dialog{animation:none}.plan,.cta,.consent{transition:none}}
   </style>
 </head>
 <body>
-<main>
-  <div class="brand"><img class="avatar" id="avatar" alt=""> ghost</div>
-  <section class="card">
-    <span class="pill" id="plan-badge"></span>
-    <h1>Сохраняй то, что удаляют</h1>
-    <p id="terms-summary"></p>
-    <label for="email">Электронная почта для чека</label>
-    <input id="email" type="email" autocomplete="email" maxlength="254" required placeholder="name@example.com">
-    <label class="consent"><input id="offer" type="checkbox" autocomplete="off"><span>Принимаю <a id="offer-link" target="_blank" rel="noopener">оферту</a> и <a id="privacy-link" target="_blank" rel="noopener">политику конфиденциальности</a>.</span></label>
-    <label class="consent"><input id="recurring" type="checkbox" autocomplete="off"><span>Я ознакомлен и согласен с <a id="tariffs-link" target="_blank" rel="noopener">тарифами и правилами рекуррентных платежей</a>.<small id="terms-consent"></small></span></label>
-    <button id="pay" disabled>Оплатить</button>
-    <button id="retry" type="button" hidden>Попробовать ещё раз</button>
-    <p class="hint">Карту и чек обрабатывает CloudPayments. Отмена автопродления сохраняет оплаченный доступ до конца периода.</p>
-    <p id="error" class="error" role="alert"></p>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><img class="logo" alt=""> Ghost</div>
+    <a class="bot" id="bot" target="_blank" rel="noopener">@ghostmsg_robot</a>
+  </header>
+
+  <main class="layout">
+    <section class="hero">
+      <h1>Больше контроля.<span>Меньше потерь.</span></h1>
+      <p class="lead">Ghost присылает удалённые и изменённые сообщения, а ещё фото, видео, голосовые и кружки.</p>
+      <ul class="chips"><li>Удаления</li><li>Правки</li><li>Медиа</li></ul>
+    </section>
+
+    <section class="plans" aria-labelledby="plans-title">
+      <h2 id="plans-title">Тарифы</h2>
+      <p class="sub">Оплата картой с автопродлением.</p>
+      <div class="list" id="plan-list" role="radiogroup" aria-labelledby="plans-title"></div>
+      <p class="terms" id="summary"></p>
+      <p class="terms">Отменить можно в любой момент в боте командой /unsub.</p>
+      <button class="cta" id="continue" type="button">Продолжить</button>
+      <p class="status" id="page-status" role="status"></p>
+    </section>
+
+    <section class="scene" aria-hidden="true">
+      <div class="event"><span class="face">А</span><div><span class="who">Алина</span><span class="note del"><span class="tag">Удалено</span><span class="said">давай перенесём на завтра</span></span></div></div>
+      <div class="event"><span class="face other">Д</span><div><span class="who">Денис</span><span class="note edit"><span class="tag">Изменено</span><s>Сдаём в пятницу</s>Сдаём в понедельник</span></div></div>
+    </section>
+  </main>
+
+  <section class="docs" aria-labelledby="docs-title">
+    <div>
+      <h2 id="docs-title">Документы</h2>
+      <div class="tabs" role="tablist" aria-labelledby="docs-title">
+        <button type="button" role="tab" id="tab-offer" aria-controls="doc-offer" aria-selected="true">Оферта</button>
+        <button type="button" role="tab" id="tab-privacy" aria-controls="doc-privacy" aria-selected="false">Конфиденциальность</button>
+        <button type="button" role="tab" id="tab-cancel" aria-controls="doc-cancel" aria-selected="false">Отмена</button>
+      </div>
+    </div>
+    <div>
+      <article class="doc" id="doc-offer" role="tabpanel" aria-labelledby="tab-offer">
+        <h3>Оферта</h3>
+        <p>Продавец: <span class="seller"></span>. Доступ включается после подтверждения оплаты. Подписка продлевается автоматически до отмены.</p>
+        <p><a class="offer-link" target="_blank" rel="noopener">Полный текст оферты</a> · <a class="tariffs-link" target="_blank" rel="noopener">Тарифы и правила рекуррентных платежей</a></p>
+      </article>
+      <article class="doc" id="doc-privacy" role="tabpanel" aria-labelledby="tab-privacy" hidden>
+        <h3>Конфиденциальность</h3>
+        <p>Оплату обрабатывает CloudPayments, реквизиты карты продавцу не передаются.</p>
+        <p><a class="privacy-link" target="_blank" rel="noopener">Политика конфиденциальности</a></p>
+      </article>
+      <article class="doc" id="doc-cancel" role="tabpanel" aria-labelledby="tab-cancel" hidden>
+        <h3>Отмена</h3>
+        <p>Откройте в боте команду /unsub и подтвердите отмену. Будущие списания прекратятся, а оплаченный доступ сохранится до конца срока.</p>
+        <p>По вопросам оплаты и возврата <a class="support-link" target="_blank" rel="noopener">напишите в поддержку</a>.</p>
+      </article>
+    </div>
   </section>
-  <p class="footer">Продавец: <span id="seller"></span> · <a id="support" target="_blank" rel="noopener">Поддержка</a></p>
-</main>
+  <p class="foot">Продавец: <span class="seller"></span></p>
+</div>
+
+<div class="veil" id="veil" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <div class="dialog-head">
+      <img class="logo" alt="">
+      <div><h2 id="dialog-title">Почти готово</h2><p class="sub">Подтвердите условия, чтобы перейти к оплате</p></div>
+      <button class="close" id="close" type="button" aria-label="Закрыть">×</button>
+    </div>
+    <div class="picked"><span id="picked-name"></span><b id="picked-price"></b></div>
+    <label class="consent"><input id="offer" type="checkbox" autocomplete="off"><span>Принимаю <a class="offer-link" target="_blank" rel="noopener">оферту</a> и <a class="privacy-link" target="_blank" rel="noopener">политику конфиденциальности</a>.</span></label>
+    <label class="consent"><input id="recurring" type="checkbox" autocomplete="off"><span>Я ознакомлен и согласен с <a class="tariffs-link" target="_blank" rel="noopener">тарифами и правилами рекуррентных платежей</a>.<small id="terms-consent"></small></span></label>
+    <button class="cta" id="pay" type="button" disabled>Перейти к оплате</button>
+    <button class="cta ghostly" id="retry" type="button" hidden>Попробовать ещё раз</button>
+    <p class="status" id="error" role="alert"></p>
+    <p class="fine">Карту и чек обрабатывает CloudPayments.</p>
+  </div>
+</div>
+
 <script>
-  const cfg=__CONFIG__, offer=document.querySelector('#offer'), recurring=document.querySelector('#recurring'), pay=document.querySelector('#pay'), retry=document.querySelector('#retry'), email=document.querySelector('#email'), error=document.querySelector('#error');
-  const plan=cfg.plan, term=`${plan.renew} ₽ ${plan.frequency}`;
-  document.querySelector('#plan-badge').textContent=plan.first===10?'СПЕЦИАЛЬНОЕ ПРЕДЛОЖЕНИЕ':'ПОДПИСКА GHOST';
-  document.querySelector('#terms-summary').textContent=`Сейчас ${plan.first} ₽ за ${plan.label}. Затем автопродление: ${term} до отмены.`;
-  document.querySelector('#terms-consent').textContent=`Согласен на оплату ${plan.first} ₽ сейчас и автоматические списания ${term} после окончания первого периода до отмены.`;
-  pay.textContent=`Оплатить ${plan.first} ₽`;
-  document.querySelector('#avatar').src=cfg.basePath+'/assets/ghost-avatar.png';document.querySelector('#tariffs-link').href=cfg.basePath+'/tariffs#recurrent';
-  document.querySelector('#offer-link').href=cfg.offer;document.querySelector('#privacy-link').href=cfg.privacy;document.querySelector('#support').href=cfg.support;document.querySelector('#seller').textContent=cfg.seller;
-  offer.checked=false;recurring.checked=false;let processing=false, prepared=null, generation=0, prepareTimer;
-  function refresh(){pay.disabled=processing||!offer.checked||!recurring.checked||!email.validity.valid||!prepared}
+  const cfg=__CONFIG__;
+  const $=(s)=>document.querySelector(s), $$=(s)=>document.querySelectorAll(s);
+  const offer=$('#offer'), recurring=$('#recurring'), pay=$('#pay'), retry=$('#retry'), error=$('#error'), veil=$('#veil'), pageStatus=$('#page-status');
+  const NAMES={lite:['Lite','Неделя'],lite_regular:['Lite','Неделя'],plus:['Plus','Месяц'],quarter:['Quarter','3 месяца'],prime:['Prime','Год']};
+  const money=(n)=>`${String(n).replace(/\B(?=(\d{3})+$)/g,' ')} ₽`;
+  let selected=cfg.selected, processing=false, prepared=null, generation=0, prepareTimer, opener=null;
+  const plan=()=>cfg.plans.find((p)=>p.id===selected);
+
+  $$('.logo').forEach((el)=>{el.src=cfg.basePath+'/assets/ghost-avatar.png'});
+  $$('.seller').forEach((el)=>{el.textContent=cfg.seller});
+  $$('.offer-link').forEach((el)=>{el.href=cfg.offer});
+  $$('.privacy-link').forEach((el)=>{el.href=cfg.privacy});
+  $$('.tariffs-link').forEach((el)=>{el.href=cfg.basePath+'/tariffs#recurrent'});
+  $$('.support-link').forEach((el)=>{el.href=cfg.support});
+  $('#bot').href='https://t.me/ghostmsg_robot';
+
+  // Plans come from the server config, never from free-form user input.
+  for(const p of cfg.plans){
+    const [name,term]=NAMES[p.id];
+    const row=document.createElement('label');row.className='plan';
+    const input=document.createElement('input');input.type='radio';input.name='plan';input.value=p.id;input.checked=p.id===selected;
+    const text=document.createElement('span');const b=document.createElement('b');b.textContent=name;const small=document.createElement('small');
+    small.textContent=p.first===p.renew?term:`${term}, затем ${money(p.renew)}`;text.append(b,small);
+    const price=document.createElement('strong');price.textContent=money(p.first);
+    const radio=document.createElement('span');radio.className='radio';
+    row.append(input,text,price,radio);$('#plan-list').append(row);
+    input.addEventListener('change',()=>{selected=p.id;offer.checked=false;recurring.checked=false;prepared=null;generation++;pageStatus.textContent='';pageStatus.classList.remove('done');paint()});
+  }
+
+  function paint(){
+    const p=plan(), term=`${money(p.renew)} ${p.frequency}`;
+    $('#summary').textContent=`${money(p.first)} сейчас, затем ${term} до отмены.`;
+    $('#continue').textContent=`Продолжить · ${money(p.first)}`;
+    $('#picked-name').textContent=`${NAMES[p.id][0]}, ${NAMES[p.id][1].toLowerCase()}`;
+    $('#picked-price').textContent=money(p.first);
+    $('#terms-consent').textContent=`Согласен на оплату ${money(p.first)} сейчас и автоматические списания ${term} после окончания первого периода до отмены.`;
+    pay.textContent=`Перейти к оплате · ${money(p.first)}`;
+    refresh();
+  }
+  function refresh(){pay.disabled=processing||!offer.checked||!recurring.checked||!prepared}
+
+  function openDialog(){opener=document.activeElement;veil.hidden=false;document.body.classList.add('locked');error.textContent='';$('#close').focus();}
+  function closeDialog(){veil.hidden=true;document.body.classList.remove('locked');if(opener?.focus)opener.focus();}
+  $('#continue').addEventListener('click',openDialog);
+  $('#close').addEventListener('click',closeDialog);
+  veil.addEventListener('click',(e)=>{if(e.target===veil)closeDialog()});
+  document.addEventListener('keydown',(e)=>{
+    if(veil.hidden)return;
+    if(e.key==='Escape')return closeDialog();
+    if(e.key!=='Tab')return;
+    const items=[...veil.querySelectorAll('a[href],button:not([disabled]),input')].filter((el)=>el.offsetParent!==null);
+    const first=items[0], last=items[items.length-1];
+    if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
+    else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
+  });
+
+  $$('[role=tab]').forEach((tab)=>tab.addEventListener('click',()=>{
+    $$('[role=tab]').forEach((t)=>{const on=t===tab;t.setAttribute('aria-selected',on);$('#'+t.getAttribute('aria-controls')).hidden=!on});
+  }));
+
+  offer.checked=false;recurring.checked=false;
   function update(autoOpen=false){
     prepared=null;const current=++generation;clearTimeout(prepareTimer);retry.hidden=true;refresh();
-    if(!offer.checked||!recurring.checked||!email.validity.valid)return;
+    if(!offer.checked||!recurring.checked)return;
     prepareTimer=setTimeout(async()=>{const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),10000);try{
-      const r=await fetch(cfg.basePath+'/pay/'+encodeURIComponent(cfg.token)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accept_offer:true,accept_recurring:true,email:email.value.trim()}),signal:controller.signal});
-      const data=await r.json();if(!r.ok||!data.ok)throw new Error('Не удалось подготовить оплату. Измените поле почты или попробуйте позже.');
+      const r=await fetch(cfg.basePath+'/pay/'+encodeURIComponent(cfg.token)+'/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accept_offer:true,accept_recurring:true,plan:selected}),signal:controller.signal});
+      const data=await r.json();
+      if(data.error==='offer_unavailable'){if(current===generation){error.textContent='Этот тариф сейчас недоступен: предложение уже использовано или подписка уже оформлена.';refresh()}return}
+      if(!r.ok||!data.ok)throw new Error('prepare');
       if(current===generation){prepared=data;error.textContent='';refresh();if(autoOpen&&!pay.disabled)pay.click()}
-    }catch(e){if(current===generation){error.textContent='Не удалось подготовить оплату. Попробуйте ещё раз.';retry.hidden=false;refresh()}}finally{clearTimeout(timeout)}},250);
+    }catch(e){if(current===generation){error.textContent='Не удалось подготовить оплату. Попробуйте ещё раз.';retry.hidden=false;refresh()}}finally{clearTimeout(timeout)}},200);
   }
-  offer.addEventListener('change',()=>update(offer.checked&&recurring.checked));recurring.addEventListener('change',()=>update(offer.checked&&recurring.checked));email.addEventListener('input',()=>update(false));
-  retry.addEventListener('click',()=>update(false));
+  // Both boxes ticked: the payment form opens straight away.
+  const ticked=()=>update(offer.checked&&recurring.checked);
+  offer.addEventListener('change',ticked);recurring.addEventListener('change',ticked);
+  retry.addEventListener('click',()=>update(true));
   pay.addEventListener('click',()=>{
-    if(!offer.checked||!recurring.checked||!email.validity.valid||processing||!prepared)return;
-    const data=prepared;let fallback;processing=true;refresh();error.textContent='';
+    if(!offer.checked||!recurring.checked||processing||!prepared)return;
+    const data=prepared, p=plan();let fallback;processing=true;refresh();error.textContent='';
     try{
-      if(!window.cp?.CloudPayments)throw new Error('Платёжная форма не загрузилась. Попробуй ещё раз.');
-      fallback=setTimeout(()=>{processing=false;error.textContent='Если форма оплаты не открылась, нажмите кнопку оплаты ещё раз.';refresh()},15000);
-      new cp.CloudPayments().pay('charge',{publicId:cfg.publicId,description:'Ghost — '+plan.label,amount:data.amount,currency:data.currency,accountId:data.account_id,invoiceId:data.invoice_id,email:data.email,skin:'mini',saveCard:true,requireEmail:true,data:{CloudPayments:{CustomerReceipt:data.receipt}}},{
-        onSuccess:()=>{clearTimeout(fallback);error.style.color='#b7f4c7';error.textContent='Платёж отправлен на проверку. Доступ включится после подтверждения.'},
-        onFail:()=>{clearTimeout(fallback);error.textContent='Оплата не завершена. Попробуй ещё раз.'},
+      if(!window.cp?.CloudPayments)throw new Error('Платёжная форма не загрузилась. Попробуйте ещё раз.');
+      fallback=setTimeout(()=>{processing=false;error.textContent='Если форма оплаты не открылась, нажмите кнопку ещё раз.';refresh()},15000);
+      // As in Anonyx: the page does not ask for an email, the CloudPayments widget does.
+      new cp.CloudPayments().pay('charge',{publicId:cfg.publicId,description:'Ghost — '+p.label,amount:data.amount,currency:data.currency,accountId:data.account_id,invoiceId:data.invoice_id,skin:'mini',saveCard:true,data:{CloudPayments:{CustomerReceipt:data.receipt}}},{
+        onSuccess:()=>{clearTimeout(fallback);closeDialog();pageStatus.classList.add('done');pageStatus.textContent='Платёж отправлен на проверку. Доступ включится после подтверждения.'},
+        onFail:()=>{clearTimeout(fallback);error.textContent='Оплата не завершена. Попробуйте ещё раз.'},
         onComplete:()=>{clearTimeout(fallback);processing=false;refresh()}
       });
     }catch(e){clearTimeout(fallback);error.textContent=e.message||'Не удалось открыть оплату.';processing=false;refresh()}
   });
+  paint();
 </script>
 </body>
 </html>
