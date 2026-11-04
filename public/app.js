@@ -164,7 +164,7 @@ const openStories=()=>{
   storiesReturnFocus=document.activeElement;
   const overlay=document.createElement('div');overlay.className='stories-overlay';
   const frame=document.createElement('iframe');frame.src='/ghost-stories.html';frame.title=t().storiesRow;frame.allow='clipboard-write';
-  frame.onload=()=>{frame.contentWindow.onGhostStoriesDone=closeStories;frame.focus();};
+  frame.onload=()=>{frame.contentWindow.onGhostStoriesDone=closeStories;frame.contentWindow.onGhostStoriesVideo=()=>sendAppAction('settings');frame.focus();};
   overlay.append(frame);document.body.append(overlay);
 };
 const revealApp=()=>document.body.classList.toggle('booting',false);

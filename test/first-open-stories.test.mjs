@@ -6,10 +6,12 @@ import { test } from "node:test";
 async function launch({ cloud = {}, connected = false, search = "", local = {}, cloudError = false } = {}) {
   const created = [];
   const stored = {};
+  const frames = [], fetches = [];
+  let closed = 0;
   const element = { innerHTML: "", classList: { toggle() {} }, setAttribute() {}, addEventListener() {}, querySelector() { return { textContent: "" }; } };
   const body = { ...element, classList: { toggled: [], toggle(name, on) { this.toggled.push([name, on]); } }, append(node) { created.push(node); } };
   const tg = {
-    initData: "signed-user", ready() {}, expand() {}, isVersionAtLeast: () => true,
+    initData: "signed-user", ready() {}, expand() {}, close() { closed++; }, isVersionAtLeast: () => true,
     CloudStorage: {
       getItem(key, done) { done(cloudError ? new Error("nope") : null, cloud[key] || ""); },
       setItem(key, value) { stored[key] = value; }
@@ -20,18 +22,18 @@ async function launch({ cloud = {}, connected = false, search = "", local = {}, 
     document: {
       querySelector(selector) { return selector === ".stories-overlay" ? (created[0] || null) : element; }, querySelectorAll() { return []; },
       documentElement: {}, body, activeElement: null,
-      createElement() { return { append() {}, remove() {} }; }
+      createElement(tag) { const node = { append() {}, remove() {}, focus() {}, contentWindow: {} }; if (tag === "iframe") frames.push(node); return node; }
     },
     location: { search, href: "https://example.test/" }, history: { replaceState() {} },
     localStorage: { getItem: (key) => local[key] ?? null, setItem(key, value) { local[key] = value; } },
     URL, URLSearchParams, Date, AbortController, Promise, setTimeout, clearTimeout, scrollTo() {}, alert() {}, navigator: {},
-    fetch: async (url) => url === "/api/dashboard"
+    fetch: async (url, options) => { fetches.push([url, options?.body]); return url === "/api/dashboard"
       ? { ok: true, json: async () => ({ ok: true, connected }) }
-      : { ok: true, json: async () => ({ ok: true }) }
+      : { ok: true, json: async () => ({ ok: true }) }; }
   };
   runInNewContext(readFileSync(new URL("../public/app.js", import.meta.url), "utf8"), context);
   await new Promise((resolve) => setTimeout(resolve, 40));
-  return { opened: created.length, stored, local, revealed: body.classList.toggled.some(([name, on]) => name === "booting" && on === false) };
+  return { frames, fetches, closedCount: () => closed, opened: created.length, stored, local, revealed: body.classList.toggled.some(([name, on]) => name === "booting" && on === false) };
 }
 
 test("the stories open on the very first launch and are marked as seen", async () => {
@@ -62,4 +64,15 @@ test("they never interrupt a link to a specific screen, and stay closed when sto
   const failed = await launch({ cloudError: true });
   assert.equal(failed.opened, 0);
   assert.ok(failed.revealed);
+});
+
+test("the instruction button in the stories does what the settings button does", async () => {
+  const run = await launch();
+  const [frame] = run.frames;
+  frame.onload();
+  assert.equal(typeof frame.contentWindow.onGhostStoriesDone, "function");
+  await frame.contentWindow.onGhostStoriesVideo();
+  const action = run.fetches.find(([url]) => url === "/api/app-action");
+  assert.equal(JSON.parse(action[1]).action, "settings");
+  assert.equal(run.closedCount(), 1);
 });
