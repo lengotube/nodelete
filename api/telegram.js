@@ -1,7 +1,5 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { renameSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { SqliteStore, sqlitePathFor } from "../src/sqlite-store.mjs";
 
 const API = "https://api.telegram.org";
 const PLATEGA_API = "https://app.platega.io";
@@ -130,136 +128,34 @@ const unseal = (value) => {
   return JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8"));
 };
 
-// The file backend is used on the VPS. The whole store is kept in memory: it is read
-// from disk once and written back at most once per STORE_FLUSH_DELAY_MS after a change
-// (and immediately on shutdown via flushStoreSync). Reading and rewriting the full JSON
-// file on every command made every operation wait for disk I/O and queue behind others.
-// Only this process may write the file while it runs.
-const STORE_FLUSH_DELAY_MS = 1000;
-let memoryStore = null;
-let storeLoading = null;
-let storeDirty = false;
-let flushTimer = null;
+// VPS storage: one SQLite database (src/sqlite-store.mjs). Every command is on disk when it
+// returns; card-payment fields are written in one transaction. On first start the legacy JSON
+// snapshot (LOCAL_DATA_FILE) and its journal are imported, so the bot never starts empty.
+let localBackend = null;
 let flushChain = Promise.resolve();
 
-const storeFile = () => {
+async function loadStore() {
   const file = process.env.LOCAL_DATA_FILE;
   if (!file) throw new Error("Vercel KV or LOCAL_DATA_FILE must be configured");
-  return file;
-};
-
-async function loadStore() {
-  if (memoryStore) return memoryStore;
-  storeLoading ||= (async () => {
-    const file = storeFile();
-    await mkdir(dirname(file), { recursive: true });
-    let store = { strings: {}, sets: {} };
-    try { store = JSON.parse(await readFile(file, "utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
-    store.strings ||= {};
-    store.sets ||= {};
-    memoryStore = store;
-    return store;
-  })().finally(() => { storeLoading = null; });
-  return storeLoading;
+  localBackend ||= new SqliteStore(sqlitePathFor(file), { legacyFile: file });
+  return localBackend.open();
 }
 
-const isExpired = (record, now) => Boolean(record?.expiresAt && record.expiresAt < now);
-function purgeExpired(store, now) {
-  for (const [key, record] of Object.entries(store.strings)) if (isExpired(record, now)) delete store.strings[key];
-  for (const [key, record] of Object.entries(store.sets)) if (isExpired(record, now)) delete store.sets[key];
-}
-// Live (non-expired) records only; an expired one is dropped on access.
 function liveString(store, key, now) {
-  const record = store.strings[key];
-  if (isExpired(record, now)) { delete store.strings[key]; storeDirty = true; return undefined; }
-  return record;
-}
-function liveSet(store, key, now) {
-  const record = store.sets[key];
-  if (isExpired(record, now)) { delete store.sets[key]; storeDirty = true; return undefined; }
-  return record;
+  return store.liveString(key, now);
 }
 
 function applyCommand(store, command, now) {
-  const [verb, ...args] = command;
-  if (verb === "GET") return liveString(store, args[0], now)?.value || null;
-  if (verb === "SMEMBERS") return [...(liveSet(store, args[0], now)?.members || [])];
-  storeDirty = true;
-  if (verb === "SET") {
-    const [key, value, , seconds] = args;
-    store.strings[key] = { value, expiresAt: Number(seconds) ? now + Number(seconds) * 1000 : null };
-    return "OK";
-  }
-  if (verb === "DEL") { let removed = 0; for (const key of args) { if (delete store.strings[key]) removed++; if (delete store.sets[key]) removed++; } return removed; }
-  if (verb === "SADD") {
-    const [key, ...values] = args;
-    const previous = liveSet(store, key, now);
-    const current = new Set(previous?.members || []);
-    values.forEach((value) => current.add(value));
-    store.sets[key] = { members: [...current], expiresAt: previous?.expiresAt || null };
-    return current.size;
-  }
-  if (verb === "SREM") {
-    const [key, ...values] = args;
-    const record = liveSet(store, key, now);
-    if (!record) return 0;
-    const current = new Set(record.members);
-    let removed = 0;
-    values.forEach((value) => { if (current.delete(value)) removed++; });
-    record.members = [...current];
-    return removed;
-  }
-  if (verb === "EXPIRE") {
-    const [key, seconds] = args;
-    const record = liveString(store, key, now) || liveSet(store, key, now);
-    if (record) record.expiresAt = now + Number(seconds) * 1000;
-    return record ? 1 : 0;
-  }
-  throw new Error(`Unsupported local storage command: ${verb}`);
+  if (store !== localBackend) throw new Error("Unexpected local store writer");
+  return store.command(command, now);
 }
 
-async function flushStore() {
-  if (!memoryStore || !storeDirty) return;
-  storeDirty = false;
-  purgeExpired(memoryStore, Date.now());
-  const file = storeFile();
-  const temporary = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-  try {
-    await writeFile(temporary, JSON.stringify(memoryStore), { mode: 0o600 });
-    await rename(temporary, file);
-  } catch (error) {
-    storeDirty = true; // keep the changes for the next attempt
-    throw error;
-  }
-}
-
-function scheduleFlush() {
-  if (flushTimer) return;
-  flushTimer = setTimeout(() => {
-    flushTimer = null;
-    flushChain = flushChain.then(flushStore).catch((error) => {
-      console.error("Store flush failed", error);
-      scheduleFlush();
-    });
-  }, STORE_FLUSH_DELAY_MS);
-}
-
-// Synchronous final write for process shutdown (SIGINT/SIGTERM from PM2).
-export function flushStoreSync() {
-  if (!memoryStore || !storeDirty) return;
-  purgeExpired(memoryStore, Date.now());
-  const file = storeFile();
-  const temporary = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-  writeFileSync(temporary, JSON.stringify(memoryStore), { mode: 0o600 });
-  renameSync(temporary, file);
-  storeDirty = false;
-}
+async function flushStore() { /* every command is already committed */ }
+export function flushStoreSync() { localBackend?.close(); }
 
 const localStore = async (command) => {
-  const store = await loadStore();
-  const result = applyCommand(store, command, Date.now());
-  if (storeDirty) scheduleFlush();
-  return result;
+  await loadStore();
+  return localBackend.command(command);
 };
 
 const kvRequest = async (command) => {
@@ -900,6 +796,7 @@ async function commitCardPaymentEvent(event) {
   const planId = event.plan || "lite", cardPlan = CARD_PLANS[planId];
   const expiresAt = permanent ? null : addCardPeriod(Math.max(now, Number(subscription?.expiresAt) || 0), cardPlan);
   const payment = { eventId: event.event_id, userId: event.user_id, invoiceId: event.invoice_id, kind: event.kind, amount: event.amount, currency: "RUB", periodDays: cardPlan.days, periodMonths: cardPlan.months, plan: planId, purchasedAt: event.paid_at, provider: "cloudpayments", status: permanent ? "needs_review" : "confirmed" };
+  store.transaction(() => {
   if (!permanent) {
     const seconds = Math.max(1, Math.ceil((expiresAt - now) / 1000));
     applyCommand(store, ["SET", subscriptionKey, seal({ plan: planId, scope: "personal", expiresAt, chargeId: event.event_id, purchasedAt: event.paid_at, provider: "cloudpayments" }), "EX", seconds], now);
@@ -913,6 +810,7 @@ async function commitCardPaymentEvent(event) {
   applyCommand(store, ["SET", `payment:${event.event_id}`, seal(payment)], now);
   applyCommand(store, ["SADD", "card:payments:ids", event.event_id], now);
   applyCommand(store, ["SADD", "payments:ids", event.event_id], now);
+  });
   flushChain = flushChain.catch(() => {}).then(flushStore);
   await flushChain;
   if (!permanent) {
@@ -2419,3 +2317,4 @@ export default async function handler(request, response) {
     return response.status(500).json({ ok: false });
   }
 }
+

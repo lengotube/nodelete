@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { readSnapshot, sqlitePathFor } from "../src/sqlite-store.mjs";
 
 // Exercise the real encrypted store and update handlers. All file IDs, users,
 // payments and Telegram responses below are synthetic; no network is allowed.
@@ -108,7 +109,7 @@ globalThis.fetch = async (url, options) => {
 const { processUpdate, flushStoreSync, getDashboard } = await import("../api/telegram.js");
 const read = (name) => {
   flushStoreSync();
-  const value = JSON.parse(readFileSync(dataFile, "utf8")).strings[name]?.value;
+  const value = readSnapshot(sqlitePathFor(dataFile)).strings[name]?.value;
   return value ? unseal(value) : null;
 };
 const snapshot = (f, messageId = 1) => read(`message:${f.connectionId}:${f.peerId}:${messageId}`);
@@ -124,7 +125,7 @@ for (const [kind, media, method, fileId, label] of types) {
     assert.equal(calls.length, 0, "Receiving media must not notify immediately");
     assert.equal(snapshot(f).media.fileId, fileId);
     assert.equal(snapshot(f).text, label);
-    assert.equal(readFileSync(dataFile, "utf8").includes(fileId), false, "File references must be encrypted");
+    assert.equal(readFileSync(sqlitePathFor(dataFile)).toString("latin1").includes(fileId), false, "File references must be encrypted");
     await remove(f);
     const delivery = calls.find((call) => call.method === method);
     assert.ok(delivery);

@@ -5,6 +5,7 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { readSnapshot, sqlitePathFor } from "../src/sqlite-store.mjs";
 
 const directory = mkdtempSync(join(tmpdir(), "ghost-card-test-"));
 const key = randomBytes(32);
@@ -55,7 +56,7 @@ const { processCardPaymentEvent, processUpdate, flushStoreSync } = await import(
 const { startDashboardApi } = await import("../src/dashboard-api.js");
 const read = (name) => {
   flushStoreSync();
-  const value = JSON.parse(readFileSync(process.env.LOCAL_DATA_FILE, "utf8")).strings[name]?.value;
+  const value = readSnapshot(sqlitePathFor(process.env.LOCAL_DATA_FILE)).strings[name]?.value;
   if (!value) return null;
   const [iv, tag, encrypted] = value.split(".").map((part) => Buffer.from(part, "base64url"));
   const decipher = createDecipheriv("aes-256-gcm", key, iv);
@@ -76,7 +77,7 @@ test("signed card payments credit seven days exactly once, including concurrent 
   const subscription = read("subscription:900");
   assert.ok(subscription.expiresAt >= before + 7 * 86400000 && subscription.expiresAt < before + 7 * 86400000 + 3000);
   assert.equal(read("payment:cp:123").amount, 10);
-  assert.equal(readFileSync(process.env.LOCAL_DATA_FILE, "utf8").includes("invoice-1"), false);
+  assert.equal(readFileSync(sqlitePathFor(process.env.LOCAL_DATA_FILE)).toString("latin1").includes("invoice-1"), false);
   const renewal = event({ event_id: "cp:124", kind: "renewal", amount: 79, invoice_id: "invoice-2" });
   await processCardPaymentEvent(...signed(renewal));
   assert.equal(read("subscription:900").expiresAt, subscription.expiresAt + 7 * 86400000);

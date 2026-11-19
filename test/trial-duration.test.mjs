@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { readSnapshot, sqlitePathFor } from "../src/sqlite-store.mjs";
 
 test("the three free days start at the first caught event, not at connection", async () => {
   const directory = mkdtempSync(join(tmpdir(), "ghost-trial-test-"));
@@ -26,7 +27,7 @@ test("the three free days start at the first caught event, not at connection", a
     const before = Date.now();
     const readTrial = () => {
       flushStoreSync();
-      const data = JSON.parse(readFileSync(process.env.LOCAL_DATA_FILE, "utf8"));
+      const data = readSnapshot(sqlitePathFor(process.env.LOCAL_DATA_FILE));
       const [iv, tag, encrypted] = data.strings["trial:90099"].value.split(".").map((value) => Buffer.from(value, "base64url"));
       const decipher = createDecipheriv("aes-256-gcm", key, iv);
       decipher.setAuthTag(tag);
