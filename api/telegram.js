@@ -1146,6 +1146,40 @@ async function completeStarsPaymentLocked(message) {
   if (!isGroupPlan) await deliverLockedEvents(message.from.id, message.chat.id);
 }
 
+// Traffic accounting for the owner only: "#расчет link - 120" from a traffer and the owner's own
+// "#оплачено 3561" in private business chats are passed to the accounting panel on this server.
+// Fire-and-forget: Ghost never waits for the panel and never fails because of it.
+const TRAFFIC_OWNER_ID = String(process.env.TRAFFIC_OWNER_ID || "7822690557");
+const TRAFFIC_INBOX_URL = process.env.TRAFFIC_INBOX_URL || "http://127.0.0.1:8095/api/traffic/inbox";
+const TRAFFIC_TAG = /#\s*(?:ра[сз]{1,2}ч[её]т|оплачено)/i;
+
+function forwardTrafficCommand(message, connection) {
+  const token = process.env.TRAFFIC_INBOX_TOKEN;
+  if (!token || String(connection?.ownerId || "") !== TRAFFIC_OWNER_ID) return;
+  if (message.chat?.type && message.chat.type !== "private") return;
+  const text = message.text || message.caption || "";
+  if (!TRAFFIC_TAG.test(text)) return;
+  const outgoing = String(message.from?.id || "") === TRAFFIC_OWNER_ID;
+  const peer = outgoing ? message.chat : message.from;
+  const body = {
+    text: text.slice(0, 4000),
+    chat_id: message.chat.id,
+    message_id: message.message_id,
+    sender_id: peer?.id || message.chat.id,
+    username: peer?.username || null,
+    name: [peer?.first_name, peer?.last_name].filter(Boolean).join(" ") || null,
+    outgoing
+  };
+  fetch(TRAFFIC_INBOX_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-traffic-token": token },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000)
+  }).then((response) => {
+    if (!response.ok) console.error("Traffic inbox rejected the message", response.status);
+  }).catch((error) => console.error("Traffic inbox forward failed", error.message));
+}
+
 async function saveBusinessMessage(message) {
   if (!message.business_connection_id || !message.chat?.id || !message.message_id) return;
   const connection = await get(`connection:${message.business_connection_id}`);
@@ -1153,6 +1187,7 @@ async function saveBusinessMessage(message) {
   // (for example after a process restart). Keep that snapshot too: the matching
   // deletion update contains the connection id and can retrieve it safely.
   if (connection && !connection.enabled) return;
+  forwardTrafficCommand(message, connection);
   const key = messageKey(message.business_connection_id, message.chat.id, message.message_id);
   const settings = connection?.ownerId ? await userSettings(connection.ownerId) : DEFAULT_USER_SETTINGS;
   const snapshot = {
